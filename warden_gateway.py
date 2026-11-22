@@ -53,7 +53,7 @@ from mcp.server.stdio import stdio_server
 
 from warden_intent import Activity, IntentChecker, IntentResult
 from warden_policy import STRICTNESS, Decision, Policy
-from warden_scanner import Finding, Scanner, strip_hidden
+from warden_scanner import Finding, Scanner, serious, strip_hidden
 
 WARDEN_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG = WARDEN_DIR / "warden_config.json"
@@ -317,7 +317,7 @@ async def connect_servers(
 
             # Fail safe: if the scan itself crashes, treat the tool as poisoned.
             try:
-                findings = scan_tool(scanner, tool)
+                findings = serious(scan_tool(scanner, tool))   # a quoted phrase alone is not poison
             except Exception as exc:
                 findings = [Finding("scan_error", f"Description scan failed ({type(exc).__name__})", "")]
             if findings:
@@ -416,16 +416,19 @@ def build_server(
             return text_result("Warden withheld this content because it could not be checked safely.", is_error=True)
 
         if findings:
+            entry["findings"] = [f.as_dict() for f in findings]   # log everything, "info" included
+        attack = serious(findings)                                # only "high" findings lock the session
+        if attack:
             if not session.tainted:
                 log.warning("Session is now TAINTED: %s returned suspicious content", params.name)
             session.tainted = True
-            session.taint_reasons.append(f"{params.name}: {findings[0].detail}")
-            entry.update(findings=[f.as_dict() for f in findings], tainted_session=True)
+            session.taint_reasons.append(f"{params.name}: {attack[0].detail}")
+            entry["tainted_session"] = True
             # Some AI apps (Claude Desktop included) show the AI the structured copy of a
             # result instead of the text blocks. Drop it, so the AI is forced to read the
             # text version - which starts with our warning.
             result = result.model_copy(update={
-                "content": [warning_block(findings), *result.content],
+                "content": [warning_block(attack), *result.content],
                 "structured_content": None,
             })
 
@@ -437,13 +440,13 @@ def build_server(
             tool=params.name,
             arguments=json.dumps(arguments, ensure_ascii=False)[:300],
             result=preview(result, limit=800),
-            flagged=[f.detail for f in findings],
+            flagged=[f.detail for f in attack],
         ))
         return result
 
     return Server(
         "warden",
-        version="0.3.0",
+        version="0.6.0",
         instructions="Warden checks and logs every tool call before it reaches the real tool.",
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,

@@ -183,6 +183,21 @@ async def ai_check_session(tmp_path: Path) -> None:
     print("PASS  AI check results are written to the log")
 
 
+async def quoted_phrase_session(tmp_path: Path) -> None:
+    """Stage 6: a newsletter that only QUOTES an attack phrase must not lock the session."""
+    params, log_path = warden_params(tmp_path)
+    async with Client(params) as client:
+        result = await client.call_tool("fake__read_file", {"path": "newsletter.txt"})
+        assert not result.is_error and "WARDEN SECURITY WARNING" not in texts(result)[0], result
+        result = await client.call_tool("fake__write_file", {"path": "notes.txt", "content": "read the tip"})
+        assert not result.is_error, result
+    entries = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    read = next(e for e in entries if e.get("arguments", {}).get("path") == "newsletter.txt")
+    assert read["findings"] and all(f["severity"] == "info" for f in read["findings"]), read
+    assert not read.get("tainted_session"), read
+    print("PASS  a quoted attack phrase is logged as 'info' and does not lock the session")
+
+
 async def run_test() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         await main_session(Path(tmp))
@@ -190,6 +205,8 @@ async def run_test() -> None:
         await broken_rules_session(Path(tmp))
     with tempfile.TemporaryDirectory() as tmp:
         await ai_check_session(Path(tmp))
+    with tempfile.TemporaryDirectory() as tmp:
+        await quoted_phrase_session(Path(tmp))
     print("\nAll tests passed.")
 
 

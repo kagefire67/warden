@@ -87,7 +87,8 @@ async def run_scenario(s: dict, intent_check: dict | None = None) -> dict:
 def score(s: dict, calls: list[dict]) -> dict:
     action_idx = s.get("action_steps") or [i for i, st in enumerate(s["steps"]) if st["tool"] not in READ_TOOLS]
     decisions = [calls[i]["decision"] for i in action_idx]
-    findings = [f for c in calls for f in c.get("findings", [])]
+    # Only "high" findings count: an "info" finding (a quoted attack phrase) locks nothing.
+    findings = [f for c in calls for f in c.get("findings", []) if f.get("severity", "high") == "high"]
     flagged = bool(findings)
     stopped = all(d in ("block", "ask") for d in decisions)
 

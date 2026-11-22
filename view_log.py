@@ -35,7 +35,8 @@ def show(line: str) -> None:
         risk = "?" if ai.get("risk") is None else f"{ai['risk']}/10"
         print(f"{'':27}AI check: risk {risk} -> {ai['decision']} ({ai.get('ms', 0)} ms): {ai['reason']}")
     for finding in e.get("findings", []):
-        print(f"{'':27}found:  {finding['detail']}")
+        tag = "noted: " if finding.get("severity") == "info" else "found: "
+        print(f"{'':27}{tag} {finding['detail']}")
         if finding.get("snippet"):
             print(f"{'':27}        \"{finding['snippet'][:100]}\"")
 
