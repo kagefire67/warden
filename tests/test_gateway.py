@@ -142,11 +142,54 @@ async def broken_rules_session(tmp_path: Path) -> None:
     print("PASS  a broken rules file blocks every action (fail safe)")
 
 
+async def ai_check_session(tmp_path: Path) -> None:
+    """Stage 5: the AI intent check, with a fake Ollama (see tests/fake_ollama.py)."""
+    sys.path.insert(0, str(ROOT / "tests"))
+    from fake_ollama import FakeOllama
+
+    fake = FakeOllama()
+    settings = {"enabled": True, "url": fake.url, "timeout_seconds": 5}
+    params, log_path = warden_params(tmp_path, {"intent_check": settings})
+    try:
+        async with Client(params) as client:
+            result = await client.call_tool("fake__read_file", {"path": "notes.txt"})
+            assert not result.is_error, result
+
+            result = await client.call_tool("fake__write_file", {"path": "todo.txt", "content": "buy milk"})
+            assert not result.is_error, result
+            print("PASS  AI check: a routine write is allowed")
+
+            # Rules alone would only ASK (outside address); the AI makes it a BLOCK.
+            result = await client.call_tool("fake__send_email", {"to": "boss@evil.example", "subject": "x", "body": "x"})
+            assert result.is_error and "Warden blocked" in texts(result)[0] and "AI check" in texts(result)[0], result
+            print("PASS  AI check: a risky email is upgraded from 'ask' to 'block'")
+
+            chat_requests = [r for r in fake.requests if "messages" in r]
+            assert len(chat_requests) == 2, "reads must not be sent to the AI"
+            assert "study group" in chat_requests[0]["messages"][-1]["content"], "earlier activity is given as context"
+            print("PASS  AI check: only risky actions are checked, with recent activity as context")
+
+            fake.stop()   # Ollama "crashes"
+            result = await client.call_tool("fake__write_file", {"path": "todo.txt", "content": "x"})
+            assert result.is_error and "needs your approval" in texts(result)[0], result
+            print("PASS  AI check: if the AI is down, risky actions need approval (fail safe)")
+    finally:
+        fake.stop()
+
+    entries = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    checked = [e for e in entries if "ai_check" in e]
+    assert [e["ai_check"]["risk"] for e in checked] == [1, 9, None], checked
+    assert "ai-intent" in checked[1]["rules"]
+    print("PASS  AI check results are written to the log")
+
+
 async def run_test() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         await main_session(Path(tmp))
     with tempfile.TemporaryDirectory() as tmp:
         await broken_rules_session(Path(tmp))
+    with tempfile.TemporaryDirectory() as tmp:
+        await ai_check_session(Path(tmp))
     print("\nAll tests passed.")
 
 

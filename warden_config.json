@@ -1,6 +1,15 @@
 {
   "rules_file": "rules.json",
   "use_llm_guard": false,
+  "intent_check": {
+    "enabled": true,
+    "backend": "ollama",
+    "model": "qwen3:8b",
+    "url": "http://127.0.0.1:11434",
+    "timeout_seconds": 30,
+    "ask_at_risk": 5,
+    "block_at_risk": 8
+  },
   "servers": {
     "filesystem": {
       "command": "npx",

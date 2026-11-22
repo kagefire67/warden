@@ -1,7 +1,7 @@
 """
 Warden - AI agent security gateway
 ==================================
-Stage 3: rules + scanner.
+Stage 5: rules + scanner + AI intent check.
 
 What this file does:
   1. Starts the real tool servers listed in warden_config.json
@@ -12,6 +12,8 @@ What this file does:
      VS Code...) as if Warden owned them.
   4. Every time the AI calls a tool, Warden:
        - checks it against the rules in rules.json  -> allow / ask / block
+       - for risky actions, asks a local AI whether it looks like an attack
+         (warden_intent.py) - the AI can only make the decision stricter
        - forwards allowed calls to the real server
        - scans what comes back for prompt-injection attacks, removes
          hidden characters, and marks the session "tainted" if it finds one
@@ -37,6 +39,7 @@ import logging
 import sys
 import time
 import uuid
+from collections import deque
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -48,7 +51,8 @@ from mcp import Client, StdioServerParameters
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 
-from warden_policy import Decision, Policy
+from warden_intent import Activity, IntentChecker, IntentResult
+from warden_policy import STRICTNESS, Decision, Policy
 from warden_scanner import Finding, Scanner, strip_hidden
 
 WARDEN_DIR = Path(__file__).resolve().parent
@@ -77,6 +81,8 @@ class Session:
     """
     tainted: bool = False
     taint_reasons: list[str] = field(default_factory=list)
+    # The last few steps, shown to the AI checker as context (Stage 5).
+    history: deque[Activity] = field(default_factory=lambda: deque(maxlen=6))
 
 
 def check_action(policy: Policy | None, tool: str, arguments: dict[str, Any], session: Session) -> Decision:
@@ -88,6 +94,15 @@ def check_action(policy: Policy | None, tool: str, arguments: dict[str, Any], se
     except Exception as exc:  # fail safe
         log.exception("Rule check crashed for %s", tool)
         return Decision("block", f"Warden's rule check failed ({type(exc).__name__}), so the action was blocked to be safe.")
+
+
+def combine(rules: Decision, ai: IntentResult) -> Decision:
+    """Merge the rules' decision with the AI checker's. The stricter one wins,
+    so the AI can make Warden stricter but never looser than the rules."""
+    if STRICTNESS[ai.decision] <= STRICTNESS[rules.action]:
+        return rules
+    risk = f" (risk {ai.risk}/10)" if ai.risk is not None else ""
+    return Decision(ai.decision, f"Warden's AI check: {ai.reason}{risk}", [*rules.rule_ids, "ai-intent"])
 
 
 def blocked_message(decision: Decision) -> str:
@@ -340,6 +355,7 @@ def build_server(
     action_log: ActionLog,
     policy: Policy | None,
     scanner: Scanner,
+    checker: IntentChecker | None = None,
     session: Session | None = None,
 ) -> Server:
     session = session or Session()
@@ -361,6 +377,13 @@ def build_server(
 
         # --- Step 1: check the action BEFORE it happens -------------------
         decision = check_action(policy, params.name, arguments, session)
+
+        # --- Step 1b: AI intent check, only for risky actions the rules did not block
+        if checker and checker.enabled and decision.action != "block" and checker.applies_to(params.name):
+            ai = await checker.check(list(session.history), params.name, arguments)
+            entry["ai_check"] = ai.as_dict()
+            decision = combine(decision, ai)
+
         entry.update(decision=decision.action, reason=decision.reason, rules=decision.rule_ids)
 
         if not decision.allowed:
@@ -408,6 +431,14 @@ def build_server(
 
         entry.update(status="error" if result.is_error else "ok", result_preview=preview(result))
         action_log.write(entry)
+
+        # Remember this step as context for later AI checks (cleaned text only).
+        session.history.append(Activity(
+            tool=params.name,
+            arguments=json.dumps(arguments, ensure_ascii=False)[:300],
+            result=preview(result, limit=800),
+            flagged=[f.detail for f in findings],
+        ))
         return result
 
     return Server(
@@ -433,13 +464,21 @@ async def main() -> None:
     action_log = ActionLog(args.log)
     policy = load_policy(config, args.config)
     scanner = Scanner(use_llm_guard=bool(config.get("use_llm_guard", False)))
+    try:
+        checker = IntentChecker(config.get("intent_check"))
+    except Exception as exc:  # a broken AI setting must not silently switch protection off
+        raise SystemExit(f"Invalid intent_check settings in {args.config}: {exc}")
 
     async with AsyncExitStack() as stack:
         exposed, routes = await connect_servers(config, stack, scanner, action_log)
         if not routes:
             log.error("No tool servers could be started - check warden_config.json")
-        server = build_server(exposed, routes, action_log, policy, scanner)
-        log.info("Warden is running: %d tools protected, logging to %s", len(routes), args.log)
+        server = build_server(exposed, routes, action_log, policy, scanner, checker)
+        if checker.enabled:
+            # Load the AI model in the background, so the first real check is fast.
+            warm_up = asyncio.create_task(checker.warm_up())  # noqa: F841 (keep a reference)
+        log.info("Warden is running: %d tools protected, AI check %s, logging to %s",
+                 len(routes), "ON" if checker.enabled else "off", args.log)
 
         async with stdio_server() as (read_stream, write_stream):
             await server.run(read_stream, write_stream, server.create_initialization_options())

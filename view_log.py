@@ -30,6 +30,10 @@ def show(line: str) -> None:
     print(f"{e.get('time', '')}  {label}  {e.get('server')}/{e.get('tool')}  {args}")
     if e.get("status") != "ok" and e.get("reason"):
         print(f"{'':27}reason: {e['reason']}")
+    ai = e.get("ai_check")
+    if ai:
+        risk = "?" if ai.get("risk") is None else f"{ai['risk']}/10"
+        print(f"{'':27}AI check: risk {risk} -> {ai['decision']} ({ai.get('ms', 0)} ms): {ai['reason']}")
     for finding in e.get("findings", []):
         print(f"{'':27}found:  {finding['detail']}")
         if finding.get("snippet"):

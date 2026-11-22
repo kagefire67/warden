@@ -10,7 +10,9 @@ AI app  --->  WARDEN  --->  real tools (files, email, ...)
 
 **Current stage: 3 done (rules + scanner).** Every action is checked against `rules.json` (allow / ask / block), tool results are scanned for hidden prompt-injection attacks, and after an attack risky actions are blocked for the rest of the session. Run all tests with `python tests\run_tests.py`.
 
-**Attack Lab (Stage 4):** `python attack_lab\run_lab.py` replays 22 fake attack and safe scenarios through Warden and writes a score report to `attack_lab\results.md`.
+**AI check (Stage 5):** for risky actions Warden asks a local AI (Ollama + `qwen3:8b`) whether the action looks like an attack. Setup: install Ollama from ollama.com, then run `ollama pull qwen3:8b` (about 5 GB). Switch it off with `"enabled": false` under `intent_check` in `warden_config.json`. If Ollama is not running, risky actions need approval (fail safe).
+
+**Attack Lab (Stage 4):** `python attack_lab\run_lab.py` replays 22 fake attack and safe scenarios through Warden and writes a score report to `attack_lab\results.md`. Add `--ai` to include the AI check (report in `attack_lab\results_ai.md`).
 
 ## Files
 
