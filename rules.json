@@ -33,10 +33,18 @@
       "unless_argument": {"to": "^[^,;]*@(yourcompany\\.com|rit\\.edu)\\s*$"}
     },
     {
+      "id": "public-posting",
+      "decision": "ask",
+      "reason": "The AI wants to post, comment or share something where other people can see it.",
+      "tools": ["*post_*", "*_post", "*comment*", "*publish*", "*tweet*", "*share*"]
+    },
+    {
       "id": "tainted-outbound",
       "decision": "block",
-      "reason": "Earlier, the AI read content containing a hidden attack. Sending, sharing or deleting is blocked for the rest of this session.",
-      "tools": ["*send*", "*forward*", "*reply*", "*share*", "*upload*", "*post*", "*publish*", "*delete*", "*remove*", "*move*", "*write*", "*create*", "*edit*", "*comment*"],
+      "reason": "Earlier, the AI read content containing a hidden attack. Sending, sharing, deleting, writing, running commands and payments are blocked for the rest of this session.",
+      "tools": ["*send*", "*forward*", "*reply*", "*share*", "*upload*", "*post*", "*publish*", "*delete*", "*remove*", "*move*", "*write*", "*create*", "*edit*", "*comment*",
+                "*exec*", "*shell*", "*run_command*", "*terminal*", "*powershell*", "*bash*",
+                "*pay*", "*transfer*", "*purchase*", "*checkout*"],
       "only_if_tainted": true
     }
   ]
