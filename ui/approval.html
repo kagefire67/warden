@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Warden - your approval is needed</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="approval">
+  <!-- A dark Warden bar, so this never looks like the AI app's own permission prompt. -->
+  <div class="approval-bar">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v5M12 16.5v.5"/></svg>
+    <b>WARDEN</b>
+    <span>security check · this is not your AI app asking</span>
+  </div>
+  <div class="countdown"><div id="countdown-bar"></div></div>
+
+  <div class="approval-body">
+    <div class="muted small">Warden stopped an action and needs your OK</div>
+    <h1 id="title" dir="auto">An AI action needs your approval</h1>
+    <p class="story flush" id="story" dir="auto"></p>
+    <details>
+      <summary>Technical details</summary>
+      <div class="details" id="details"></div>
+    </details>
+  </div>
+
+  <div class="approval-foot">
+    <span class="muted small" id="countdown-text"></span>
+    <div>
+      <button class="btn go" id="allow">Allow once</button>
+      <button class="btn danger" id="deny" autofocus>Deny</button>
+    </div>
+  </div>
+</div>
+<script src="approval.js"></script>
+</body>
+</html>

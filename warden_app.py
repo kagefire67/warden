@@ -1,21 +1,28 @@
 """
-Warden App (Stage 8)
-====================
-The window a normal person sees. Start it with:
+Warden App (Stage 8, new look)
+==============================
+The window a normal person sees. Double-click "Warden App.cmd", or run:
 
     .venv\\Scripts\\pythonw.exe warden_app.py      (no console window)
     .venv\\Scripts\\python.exe  warden_app.py      (with a console, for debugging)
 
-Tabs:
-  Home        - "You're protected" checks + today's numbers
+The screens are HTML/CSS/JS in the ui/ folder, shown in a real app window by
+pywebview (it uses the Edge engine built into Windows). Python and the screens
+talk through `Api` below: the page calls window.pywebview.api.<method>().
+
+Pages:
+  Home        - "You're protected", today's numbers, AI apps with Protect buttons, checks
   History     - what Warden stopped, as plain-language stories
   Attack Lab  - run the fake attacks and see the score
 
 While it runs, it answers Warden's approval questions with an Allow / Deny popup
 (see warden_approval.py). If the app is closed, "ask" actions stay blocked.
 
-Built with Tkinter (comes with Python, nothing to install). The checks below are
-plain functions so they can be tested without opening a window.
+SECURITY: stories may contain an attacker's text. The ui/*.js files only insert
+text with textContent (never as HTML) and a strict Content-Security-Policy only
+lets Warden's own scripts run. tests/test_app_ui.py checks both.
+
+The checks below are plain functions so they can be tested without a window.
 """
 
 from __future__ import annotations
@@ -23,16 +30,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import queue
+import re
 import subprocess
 import sys
 import threading
-import tkinter as tk
 import urllib.request
 from datetime import datetime, timezone
 from glob import glob
 from pathlib import Path
-from tkinter import messagebox, scrolledtext, ttk
 from typing import Any
 
 import warden_protect
@@ -41,6 +46,7 @@ from warden_policy import Policy
 from warden_protect import ProtectError, Target
 
 WARDEN_DIR = Path(__file__).resolve().parent
+UI_DIR = WARDEN_DIR / "ui"
 CONFIG = WARDEN_DIR / "warden_config.json"
 LOG = WARDEN_DIR / "logs" / "actions.jsonl"
 
@@ -69,7 +75,7 @@ def protection_status(config_path: Path) -> tuple[str, list[str]]:
 
 
 def app_check(target: Target) -> tuple[bool | None, str]:
-    """One line for the Home tab about one AI app. None = nothing to protect yet (grey, not red)."""
+    """One line about one AI app. None = nothing to protect yet (grey, not red)."""
     state, bypass = warden_protect.status(target)
     if state == "unreadable":
         return False, f"{target.name}: its config could not be read, so Warden left it alone"
@@ -114,6 +120,18 @@ def check_ai(config: dict[str, Any]) -> tuple[bool | None, str]:
     return True, f"AI check ready ({model})"
 
 
+def status_summary(checks: list[tuple[bool | None, str]]) -> tuple[str, str, str]:
+    """(overall "ok" | "warn" | "bad", headline, subline) for the big card at the top."""
+    problems = [t for ok, t in checks if ok is False]
+    if not any(ok for ok, t in checks if "goes through Warden" in t):
+        return "bad", "Not protected", "No AI app goes through Warden yet. Click Protect below."
+    if any("NOT protected" in p or "rules" in p for p in problems):
+        return "bad", "Not fully protected", problems[0]
+    if problems:
+        return "warn", "Protected, with warnings", problems[0]
+    return "ok", "You're protected", "Warden is checking every action your AI takes."
+
+
 def read_events(log_path: Path = LOG, limit: int = 300) -> list[dict[str, Any]]:
     """The newest `limit` log entries, newest first."""
     try:
@@ -154,349 +172,196 @@ def event_icon(e: dict[str, Any]) -> str:
     return "allowed"
 
 
+def event_for_ui(e: dict[str, Any]) -> dict[str, str]:
+    """A log entry turned into plain strings for the History page (shown as text, never HTML)."""
+    when = str(e.get("time", "")).replace("T", " ")[:16]
+    args = json.dumps(e.get("arguments", {}), ensure_ascii=False)
+    return {
+        "id": str(e.get("id", "")),
+        "when": when,
+        "badge": event_icon(e),
+        "title": str(e.get("story_title") or f"{e.get('server')}/{e.get('tool')}"),
+        "story": str(e.get("story") or ""),
+        "details": f"{e.get('server')}/{e.get('tool')} {args[:400]}",
+    }
+
+
+LAB_SCORE = re.compile(r"Attacks stopped:\s+(\d+/\d+)\s+\((\d+) blocked.*?\)|Attacks missed:\s+(\d+/\d+)|Safe actions allowed:\s+(\d+/\d+)")
+
+
+def parse_lab_score(lines: list[str]) -> dict[str, str] | None:
+    score: dict[str, str] = {}
+    for line in lines:
+        m = LAB_SCORE.search(line)
+        if not m:
+            continue
+        if m.group(1):
+            score["stopped"], score["blocked"] = m.group(1), m.group(2)
+        elif m.group(3):
+            score["missed"] = m.group(3)
+        elif m.group(4):
+            score["safe"] = m.group(4)
+    return score if len(score) == 4 else None
+
+
 # ---------------------------------------------------------------------------
-# The window
+# The bridge between the screens (JavaScript) and Python
 # ---------------------------------------------------------------------------
+# pywebview exposes the PUBLIC methods of these objects to the page.
+# Everything internal starts with "_" so the page cannot reach it.
 
-GREEN, RED, AMBER, GREY = "#1a7f37", "#cf222e", "#9a6700", "#57606a"
-FONT = ("Segoe UI", 10)
+class Api:
+    def __init__(self) -> None:
+        self._lab_lock = threading.Lock()
+        self._lab_lines: list[str] = []
+        self._lab_sent = 0
+        self._lab_running = False
 
+    def get_status(self) -> dict[str, Any]:
+        config = load_config()
+        checks: list[tuple[bool | None, str]] = [(True, "Approval popups are on (this window is open)")]
+        apps = []
+        targets = warden_protect.detect_targets()
+        if not targets:
+            checks.append((False, "No supported AI app found on this PC"))
+        for t in targets:
+            check = app_check(t)
+            state, bypass = warden_protect.status(t)
+            checks.append(check)
+            apps.append({"id": str(t.config), "name": t.name, "path": str(t.config), "state": state,
+                         "has_tools": bool(bypass) or state == "protected",
+                         "note": check[1] if bypass else ""})
+        checks.append(check_rules(config))
+        checks.append(check_ai(config))
+        overall, headline, subline = status_summary(checks)
+        return {"overall": overall, "headline": headline, "subline": subline,
+                "checks": [{"ok": ok, "text": text} for ok, text in checks],
+                "apps": apps, "today": today_summary(read_events())}
 
-class ApprovalPopup(tk.Toplevel):
-    """Allow / Deny window. Closing it or waiting too long = Deny."""
+    def get_history(self, show_all: bool = False) -> list[dict[str, str]]:
+        events = read_events()
+        return [event_for_ui(e) for e in events if show_all or e.get("story")][:200]
 
-    def __init__(self, app: "WardenApp", request: dict[str, Any], done: threading.Event, box: dict[str, str]):
-        super().__init__(app.root)
-        self.done, self.box = done, box
-        self.remaining = max(5, int(float(request.get("timeout", 60))) - 2)
-        self.title("Warden - your approval is needed")
-        self.attributes("-topmost", True)
-        self.resizable(False, False)
-        self.protocol("WM_DELETE_WINDOW", lambda: self.answer("deny"))
-
-        frame = ttk.Frame(self, padding=18)
-        frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text="Warden stopped an action and needs your OK", font=("Segoe UI", 9), foreground=GREY).pack(anchor="w")
-        ttk.Label(frame, text=request.get("title", "An AI action needs your approval"),
-                  font=("Segoe UI", 13, "bold"), wraplength=520).pack(anchor="w", pady=(4, 8))
-        ttk.Label(frame, text=request.get("story", ""), font=FONT, wraplength=520, justify="left").pack(anchor="w")
-        details = f"Tool: {request.get('server')}/{request.get('tool')}\nDetails: {request.get('arguments', '')}"
-        ttk.Label(frame, text=details, font=("Consolas", 9), foreground=GREY, wraplength=520,
-                  justify="left").pack(anchor="w", pady=(10, 0))
-        self.countdown = ttk.Label(frame, font=("Segoe UI", 9), foreground=AMBER)
-        self.countdown.pack(anchor="w", pady=(10, 0))
-
-        buttons = ttk.Frame(frame)
-        buttons.pack(fill="x", pady=(12, 0))
-        deny = tk.Button(buttons, text="Deny", width=14, bg=RED, fg="white", font=("Segoe UI", 10, "bold"),
-                         command=lambda: self.answer("deny"))
-        deny.pack(side="right")
-        tk.Button(buttons, text="Allow once", width=14, bg=GREEN, fg="white", font=("Segoe UI", 10, "bold"),
-                  command=lambda: self.answer("allow")).pack(side="right", padx=(0, 8))
-        deny.focus_set()          # pressing Enter by accident = Deny, never Allow
-        self.bell()
-        self.lift()
-        self.tick()
-
-    def tick(self) -> None:
-        if self.done.is_set():
-            self.destroy()
-            return
-        self.countdown.config(text=f"No answer = Deny in {self.remaining}s")
-        self.remaining -= 1
-        if self.remaining < 0:
-            self.answer("timeout")   # nobody clicked: blocked, and the story says so (not "you chose Deny")
-        else:
-            self.after(1000, self.tick)
-
-    def answer(self, decision: str) -> None:
-        if not self.done.is_set():
-            self.box["decision"] = decision
-            self.done.set()
-        self.destroy()
-
-
-class WardenApp:
-    def __init__(self, root: tk.Tk) -> None:
-        self.root = root
-        self.inbox: queue.Queue = queue.Queue()     # messages from background threads to the window
-        root.title("Warden")
-        root.geometry("920x640")
-        root.minsize(760, 520)
-        style = ttk.Style()
-        if "vista" in style.theme_names():
-            style.theme_use("vista")
-        style.configure("Treeview", rowheight=26, font=FONT)
-
-        header = ttk.Frame(root, padding=(18, 14))
-        header.pack(fill="x")
-        self.status = tk.Label(header, text="Checking...", font=("Segoe UI", 20, "bold"), anchor="w")
-        self.status.pack(fill="x")
-        self.substatus = ttk.Label(header, text="", font=FONT, foreground=GREY)
-        self.substatus.pack(fill="x")
-
-        tabs = ttk.Notebook(root)
-        tabs.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-        self.home = ttk.Frame(tabs, padding=16)
-        self.history = ttk.Frame(tabs, padding=12)
-        self.lab = ttk.Frame(tabs, padding=12)
-        tabs.add(self.home, text="  Home  ")
-        tabs.add(self.history, text="  History  ")
-        tabs.add(self.lab, text="  Attack Lab  ")
-        self.build_home()
-        self.build_history()
-        self.build_lab()
-
-        self.server = ApprovalServer(self.decide)
-        self.server.start()
-        root.protocol("WM_DELETE_WINDOW", self.quit)
-
-        self.refresh_status()
-        self.refresh_history()
-        self.root.after(200, self.process_inbox)
-
-    # --- Home ---------------------------------------------------------------
-
-    def build_home(self) -> None:
-        ttk.Label(self.home, text="Protection checks", font=("Segoe UI", 12, "bold")).pack(anchor="w")
-        self.checks = ttk.Frame(self.home)
-        self.checks.pack(fill="x", pady=(6, 16))
-        ttk.Label(self.home, text="AI apps on this PC", font=("Segoe UI", 12, "bold")).pack(anchor="w")
-        self.apps = ttk.Frame(self.home)
-        self.apps.pack(fill="x", pady=(6, 16))
-        ttk.Label(self.home, text="Today", font=("Segoe UI", 12, "bold")).pack(anchor="w")
-        self.today = ttk.Label(self.home, text="", font=("Segoe UI", 11))
-        self.today.pack(anchor="w", pady=(6, 16))
-        buttons = ttk.Frame(self.home)
-        buttons.pack(anchor="w")
-        ttk.Button(buttons, text="Check again", command=self.refresh_status).pack(side="left")
-        ttk.Button(buttons, text="Open Warden folder", command=lambda: os.startfile(WARDEN_DIR)).pack(side="left", padx=8)
-
-    def refresh_status(self) -> None:
-        """Run the checks in the background (the AI check can take a moment)."""
-        def work() -> None:
-            config = load_config()
-            checks: list[tuple[bool | None, str]] = [(True, "Approval popups are on (this window is open)")]
-            targets = warden_protect.detect_targets()
-            if not targets:
-                checks.append((False, "No supported AI app found on this PC"))
-            apps = [(t, app_check(t), warden_protect.status(t)[0]) for t in targets]
-            checks += [check for _, check, _ in apps]
-            checks.append(check_rules(config))
-            checks.append(check_ai(config))
-            self.inbox.put(("status", checks))
-            self.inbox.put(("apps", apps))
-        threading.Thread(target=work, daemon=True).start()
-        self.root.after(15000, self.refresh_status)
-
-    def show_status(self, checks: list[tuple[bool | None, str]]) -> None:
-        for child in self.checks.winfo_children():
-            child.destroy()
-        for ok, text in checks:
-            mark, color = {True: ("✔", GREEN), False: ("✖", RED), None: ("–", GREY)}[ok]
-            row = ttk.Frame(self.checks)
-            row.pack(anchor="w", pady=2)
-            tk.Label(row, text=mark, fg=color, font=("Segoe UI Symbol", 12, "bold"), width=2).pack(side="left")
-            ttk.Label(row, text=text, font=("Segoe UI", 11)).pack(side="left")
-        problems = [t for ok, t in checks if ok is False]
-        if not any(ok for ok, t in checks if "goes through Warden" in t):
-            self.status.config(text="✖  Not protected", fg=RED)
-            self.substatus.config(text="No AI app goes through Warden yet. Click Protect below.")
-        elif not problems:
-            self.status.config(text="✔  You're protected", fg=GREEN)
-            self.substatus.config(text="Warden is checking every action your AI takes.")
-        elif any("NOT protected" in p or "rules" in p for p in problems):
-            self.status.config(text="✖  Not protected", fg=RED)
-            self.substatus.config(text=problems[0])
-        else:
-            self.status.config(text="⚠  Protected, with warnings", fg=AMBER)
-            self.substatus.config(text=problems[0])
-
-    def show_apps(self, apps: list[tuple[Target, tuple[bool | None, str], str]]) -> None:
-        for child in self.apps.winfo_children():
-            child.destroy()
-        for target, (_, text), state in apps:
-            row = ttk.Frame(self.apps)
-            row.pack(fill="x", pady=2)
-            label = "Unprotect" if state == "protected" else "Protect"
-            button = ttk.Button(row, text=label, width=12,
-                                command=lambda t=target, s=state: self.toggle_protection(t, s))
-            button.pack(side="left")
-            if state == "unreadable":
-                button.state(["disabled"])
-            ttk.Label(row, text=f"  {target.name}", font=("Segoe UI", 11, "bold")).pack(side="left")
-            ttk.Label(row, text=f"   {target.config}", font=("Segoe UI", 8), foreground=GREY).pack(side="left")
-
-    def toggle_protection(self, target: Target, state: str) -> None:
-        """One-click Protect / Unprotect, always with a confirmation and a backup."""
-        if state == "protected":
-            if not messagebox.askyesno(f"Unprotect {target.name}?",
-                                       f"{target.name} will talk to its tools directly again, WITHOUT Warden checking them.\n\n"
-                                       "A backup of its config is made first. Continue?"):
-                return
-            action, verb = warden_protect.unprotect, "unprotected"
-        else:
-            if not messagebox.askyesno(f"Protect {target.name}?",
-                                       f"Warden will:\n"
-                                       f"  1. back up {target.name}'s config file,\n"
-                                       f"  2. move its tools behind Warden (kept in your private Warden folder),\n"
-                                       f"  3. make {target.name} talk only to Warden.\n\n"
-                                       "You can undo this any time with Unprotect. Continue?"):
-                return
-            action, verb = warden_protect.protect, "protected"
+    def toggle_protection(self, app_id: str) -> dict[str, Any]:
+        target = next((t for t in warden_protect.detect_targets() if str(t.config) == app_id), None)
+        if target is None:
+            return {"ok": False, "lines": ["That app could not be found any more."]}
+        protecting = warden_protect.status(target)[0] != "protected"
         try:
-            result = action(target)
+            result = (warden_protect.protect if protecting else warden_protect.unprotect)(target)
         except (ProtectError, OSError) as exc:
-            messagebox.showerror("Nothing was changed", str(exc))
-            return
-        lines = [f"{target.name} is now {verb}."]
+            return {"ok": False, "lines": [str(exc)]}
+        lines = [f"{target.name} is now {'protected' if protecting else 'unprotected'}."]
         if result.moved:
-            lines.append(("Tools moved behind Warden: " if verb == "protected" else "Tools given back: ")
-                         + ", ".join(result.moved))
+            lines.append(("Tools moved behind Warden: " if protecting else "Tools given back: ") + ", ".join(result.moved))
         if result.left:
             lines.append("Online tools Warden cannot protect yet (they still skip it): " + ", ".join(result.left))
         if result.backup:
-            lines.append(f"Backup: {result.backup}")
-        lines.append(f"\nFully restart {target.name} (also from the system tray) to finish.")
-        messagebox.showinfo("Done", "\n".join(lines))
-        self.refresh_status()
+            lines.append(f"Backup of the old config: {result.backup}")
+        lines.append(f"Fully restart {target.name} (also from the system tray) to finish.")
+        return {"ok": True, "lines": lines}
 
-    # --- History ------------------------------------------------------------
+    def run_lab(self, use_ai: bool = False) -> bool:
+        with self._lab_lock:
+            if self._lab_running:
+                return False
+            self._lab_running, self._lab_lines, self._lab_sent = True, [], 0
+        threading.Thread(target=self._run_lab, args=(bool(use_ai),), daemon=True).start()
+        return True
 
-    def build_history(self) -> None:
-        top = ttk.Frame(self.history)
-        top.pack(fill="x")
-        self.show_all = tk.BooleanVar(value=False)
-        ttk.Checkbutton(top, text="Show every action (not only when Warden stepped in)", variable=self.show_all,
-                        command=self.refresh_history_now).pack(side="left")
-        self.tree = ttk.Treeview(self.history, columns=("when", "what", "title"), show="headings", height=12)
-        for col, text, width in (("when", "When", 130), ("what", "What", 120), ("title", "Story", 560)):
-            self.tree.heading(col, text=text)
-            self.tree.column(col, width=width, anchor="w")
-        self.tree.pack(fill="both", expand=True, pady=8)
-        self.tree.bind("<<TreeviewSelect>>", self.show_selected_story)
-        self.detail = scrolledtext.ScrolledText(self.history, height=7, wrap="word", font=FONT)
-        self.detail.pack(fill="x")
-        self.events: dict[str, dict[str, Any]] = {}
-        self.last_seen = None
+    def lab_poll(self) -> dict[str, Any]:
+        with self._lab_lock:
+            new = self._lab_lines[self._lab_sent:]
+            self._lab_sent = len(self._lab_lines)
+            running = self._lab_running
+            score = None if running else parse_lab_score(self._lab_lines)
+        return {"running": running, "lines": new, "score": score}
 
-    def refresh_history_now(self) -> None:
-        self.last_seen = None
-        self.refresh_history(reschedule=False)
-
-    def refresh_history(self, reschedule: bool = True) -> None:
-        events = read_events()
-        newest = events[0].get("id") if events else None
-        if newest != self.last_seen:
-            self.last_seen = newest
-            self.tree.delete(*self.tree.get_children())
-            self.events.clear()
-            for e in events:
-                if not self.show_all.get() and not e.get("story"):
-                    continue
-                when = str(e.get("time", "")).replace("T", " ")[:16]
-                title = e.get("story_title") or f"{e.get('server')}/{e.get('tool')}"
-                iid = self.tree.insert("", "end", values=(when, event_icon(e), title))
-                self.events[iid] = e
-            summary = today_summary(events)
-            self.today.config(text=f"{summary['actions']} actions checked   •   {summary['attacks']} attacks found   •   "
-                                   f"{summary['blocked']} stopped   •   {summary['you_allowed']} allowed by you")
-        if reschedule:
-            self.root.after(3000, self.refresh_history)
-
-    def show_selected_story(self, _event: Any = None) -> None:
-        selected = self.tree.selection()
-        if not selected:
-            return
-        e = self.events.get(selected[0], {})
-        text = e.get("story") or f"{e.get('server')}/{e.get('tool')} {json.dumps(e.get('arguments', {}), ensure_ascii=False)}"
-        self.detail.delete("1.0", "end")
-        self.detail.insert("1.0", text)
-
-    # --- Attack Lab -----------------------------------------------------------
-
-    def build_lab(self) -> None:
-        ttk.Label(self.lab, text="Run safe, fake attacks through Warden and see how many it stops.",
-                  font=("Segoe UI", 11)).pack(anchor="w")
-        row = ttk.Frame(self.lab)
-        row.pack(anchor="w", pady=8)
-        self.use_ai = tk.BooleanVar(value=False)
-        self.lab_button = ttk.Button(row, text="Run Attack Lab", command=self.run_lab)
-        self.lab_button.pack(side="left")
-        ttk.Checkbutton(row, text="Include the AI check (slower, needs Ollama)", variable=self.use_ai).pack(side="left", padx=10)
-        self.score = ttk.Label(self.lab, text="", font=("Segoe UI", 12, "bold"))
-        self.score.pack(anchor="w", pady=(4, 8))
-        self.lab_output = scrolledtext.ScrolledText(self.lab, wrap="none", font=("Consolas", 9))
-        self.lab_output.pack(fill="both", expand=True)
-
-    def run_lab(self) -> None:
-        self.lab_button.config(state="disabled")
-        self.lab_output.delete("1.0", "end")
-        self.score.config(text="Running... (about a minute)")
-        args = [sys.executable, str(WARDEN_DIR / "attack_lab" / "run_lab.py")] + (["--ai"] if self.use_ai.get() else [])
-
-        def work() -> None:
-            flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    def _run_lab(self, use_ai: bool) -> None:
+        args = [sys.executable.replace("pythonw.exe", "python.exe"), str(WARDEN_DIR / "attack_lab" / "run_lab.py")]
+        if use_ai:
+            args.append("--ai")
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        try:
             proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                                     encoding="utf-8", cwd=WARDEN_DIR, creationflags=flags)
-            score = []
             for line in proc.stdout:
-                self.inbox.put(("lab_line", line))
-                if line.startswith(("Attacks stopped", "Safe actions", "Attacks missed")):
-                    score.append(line.strip())
+                with self._lab_lock:
+                    self._lab_lines.append(line)
             proc.wait()
-            self.inbox.put(("lab_done", "\n".join(score) or "The lab did not finish - see the output below."))
-        threading.Thread(target=work, daemon=True).start()
+        except OSError as exc:
+            with self._lab_lock:
+                self._lab_lines.append(f"Could not start the Attack Lab: {exc}\n")
+        finally:
+            with self._lab_lock:
+                self._lab_running = False
 
-    # --- Approvals (called from the approval server's thread) ----------------------
 
-    def decide(self, request: dict[str, Any]) -> str:
+class ApprovalApi:
+    """The bridge for ONE approval popup."""
+
+    def __init__(self, request: dict[str, Any], done: threading.Event, box: dict[str, str]) -> None:
+        self._request, self._done, self._box = request, done, box
+
+    def get_request(self) -> dict[str, Any]:
+        keys = ("title", "story", "server", "tool", "arguments", "timeout")
+        return {k: self._request.get(k) for k in keys}
+
+    def answer(self, decision: str) -> None:
+        if decision in ("allow", "deny", "timeout") and not self._done.is_set():
+            self._box["decision"] = decision
+            self._done.set()
+
+
+# ---------------------------------------------------------------------------
+# Windows
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    import webview   # imported here so the checks above can be tested without it
+
+    if asyncio.run(app_is_running()):
+        webview.create_window("Warden", html="<p style='font-family:Segoe UI;padding:20px'>"
+                                              "The Warden App is already running.</p>", width=360, height=140)
+        webview.start()
+        return
+
+    def decide(request: dict[str, Any]) -> str:
+        """Called by the approval server (in its own thread) for every "ask" action."""
         done, box = threading.Event(), {}
-        self.inbox.put(("approval", request, done, box))
-        if not done.wait(float(request.get("timeout", 60))):
-            done.set()                     # closes the popup if it is still open
+        popup = webview.create_window(
+            "Warden - your approval is needed", str(UI_DIR / "approval.html"),
+            js_api=ApprovalApi(request, done, box), width=560, height=470,
+            resizable=False, on_top=True, focus=True)
+        popup.events.closed += lambda: done.set()          # closing the window = not allowed
+        answered = done.wait(float(request.get("timeout", 60)))
+        try:
+            popup.destroy()
+        except Exception:
+            pass
+        if not answered:
             return "timeout"
         return box.get("decision", "deny")
 
-    # --- Plumbing ----------------------------------------------------------------
+    server = ApprovalServer(decide)
+    server.start()
+    window = webview.create_window(
+        "Warden", str(UI_DIR / "index.html"), js_api=Api(),
+        width=1060, height=760, min_size=(820, 560), confirm_close=True)
 
-    def process_inbox(self) -> None:
-        """Tkinter may only be touched from the main thread, so background work sends messages here."""
-        try:
-            while True:
-                kind, *data = self.inbox.get_nowait()
-                if kind == "status":
-                    self.show_status(data[0])
-                elif kind == "apps":
-                    self.show_apps(data[0])
-                elif kind == "approval":
-                    ApprovalPopup(self, *data)
-                elif kind == "lab_line":
-                    self.lab_output.insert("end", data[0])
-                    self.lab_output.see("end")
-                elif kind == "lab_done":
-                    self.score.config(text=data[0])
-                    self.lab_button.config(state="normal")
-        except queue.Empty:
-            pass
-        self.root.after(200, self.process_inbox)
+    def shutdown() -> None:
+        server.stop()
+        for w in list(webview.windows):               # close any open popups too
+            if w is not window:
+                try:
+                    w.destroy()
+                except Exception:
+                    pass
 
-    def quit(self) -> None:
-        if messagebox.askyesno("Close Warden App?",
-                               "While the Warden App is closed, actions that need your approval are blocked.\n\nClose it?"):
-            self.server.stop()
-            self.root.destroy()
-
-
-def main() -> None:
-    if asyncio.run(app_is_running()):
-        root = tk.Tk()
-        root.withdraw()
-        messagebox.showinfo("Warden", "The Warden App is already running.")
-        return
-    root = tk.Tk()
-    WardenApp(root)
-    root.mainloop()
+    window.events.closed += shutdown
+    webview.start(localization={
+        "global.quitConfirmation": "While the Warden App is closed, actions that need your approval are blocked. Close it?",
+    })
 
 
 if __name__ == "__main__":

@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- Security: only Warden's own files may run or load here. Attacker text from
+       stories is always inserted as plain text (never HTML) - see app.js. -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Warden</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+      <div>
+        <div class="brand-name">Warden</div>
+        <div class="brand-tag">AI security guard</div>
+      </div>
+    </div>
+    <button class="nav active" data-page="home">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>
+      Home
+    </button>
+    <button class="nav" data-page="history">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+      History
+    </button>
+    <button class="nav" data-page="lab">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6M10 3v6L4.5 19A1.5 1.5 0 0 0 5.8 21h12.4a1.5 1.5 0 0 0 1.3-2L14 9V3"/><path d="M7 15h10"/></svg>
+      Attack Lab
+    </button>
+    <div class="sidebar-foot">Keep this window open:<br>it shows the Allow / Deny popups.</div>
+  </aside>
+
+  <main>
+    <!-- ================= HOME ================= -->
+    <section class="page" id="page-home">
+      <div class="card hero" id="hero">
+        <div class="hero-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path id="hero-mark" d="M9 12l2 2 4-4"/></svg>
+        </div>
+        <div>
+          <h1 id="headline">Checking…</h1>
+          <p id="subline">Looking at your AI apps and Warden's settings.</p>
+        </div>
+        <div class="spacer"></div>
+        <button class="btn" id="recheck">Check again</button>
+      </div>
+
+      <div class="stats">
+        <div class="card stat"><div class="stat-value" id="stat-actions">–</div><div class="stat-label">actions checked today</div></div>
+        <div class="card stat"><div class="stat-value" id="stat-attacks">–</div><div class="stat-label">attacks found</div></div>
+        <div class="card stat"><div class="stat-value" id="stat-blocked">–</div><div class="stat-label">actions stopped</div></div>
+        <div class="card stat"><div class="stat-value" id="stat-allowed">–</div><div class="stat-label">allowed by you</div></div>
+      </div>
+
+      <div class="card">
+        <h2>AI apps on this PC</h2>
+        <div class="rows" id="apps"></div>
+      </div>
+
+      <div class="card">
+        <h2>Protection checks</h2>
+        <div class="rows" id="checks"></div>
+      </div>
+    </section>
+
+    <!-- ================= HISTORY ================= -->
+    <section class="page" id="page-history" hidden>
+      <div class="toolbar">
+        <h1 class="page-title">History</h1>
+        <div class="segmented" id="history-filter">
+          <button class="active" data-all="0">When Warden stepped in</button>
+          <button data-all="1">Everything</button>
+        </div>
+      </div>
+      <div class="events" id="events"></div>
+    </section>
+
+    <!-- ================= ATTACK LAB ================= -->
+    <section class="page" id="page-lab" hidden>
+      <h1 class="page-title">Attack Lab</h1>
+      <div class="card">
+        <p class="flush">Runs safe, fake attacks (hidden emails, poisoned web pages, tricks in Arabic, Hindi, Urdu…)
+          through Warden and shows how many it stops. Nothing real is touched.</p>
+        <div class="lab-controls">
+          <button class="btn primary" id="lab-run">Run Attack Lab</button>
+          <label class="switch"><input type="checkbox" id="lab-ai"> Include the AI check <span class="muted small">(slower, needs Ollama)</span></label>
+        </div>
+        <div class="progress spaced" id="lab-progress" hidden><div></div></div>
+      </div>
+      <div class="score" id="lab-score" hidden>
+        <div class="card stat"><div class="stat-value" id="score-stopped">–</div><div class="stat-label">attacks stopped</div></div>
+        <div class="card stat"><div class="stat-value" id="score-blocked">–</div><div class="stat-label">blocked outright</div></div>
+        <div class="card stat"><div class="stat-value" id="score-missed">–</div><div class="stat-label">attacks missed</div></div>
+        <div class="card stat"><div class="stat-value" id="score-safe">–</div><div class="stat-label">safe actions allowed</div></div>
+      </div>
+      <div class="card">
+        <details id="lab-details">
+          <summary>Every scenario</summary>
+          <pre class="output" id="lab-output">Not run yet.</pre>
+        </details>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- Confirmation dialog for Protect / Unprotect -->
+<div class="modal-backdrop" id="modal" hidden>
+  <div class="card modal">
+    <h2 id="modal-title"></h2>
+    <div id="modal-body"></div>
+    <div class="modal-actions">
+      <button class="btn" id="modal-cancel">Cancel</button>
+      <button class="btn primary" id="modal-ok">Continue</button>
+    </div>
+  </div>
+</div>
+
+<script src="demo.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
