@@ -8,7 +8,7 @@ AI app  --->  WARDEN  --->  real tools (files, email, ...)
                  +--> logs/actions.jsonl
 ```
 
-**Current stage: 1 (engine, monitor-only).** Every action is passed through and logged. Blocking rules arrive in Stage 3 inside `check_action()` in `warden_gateway.py`.
+**Current stage: 3 done (rules + scanner).** Every action is checked against `rules.json` (allow / ask / block), tool results are scanned for hidden prompt-injection attacks, and after an attack risky actions are blocked for the rest of the session. Run all tests with `python tests\run_tests.py`.
 
 ## Files
 

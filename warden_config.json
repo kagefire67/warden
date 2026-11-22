@@ -1,4 +1,6 @@
 {
+  "rules_file": "rules.json",
+  "use_llm_guard": false,
   "servers": {
     "filesystem": {
       "command": "npx",

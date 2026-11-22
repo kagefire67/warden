@@ -20,12 +20,20 @@ def show(line: str) -> None:
     except json.JSONDecodeError:
         return
     label = LABELS.get(e.get("status") or e.get("decision"), "[?????]")
+    if e.get("decision") == "ask":
+        label = "[ASK]  "          # stopped until the user approves
+    if e.get("event") == "tool_flagged":
+        label = "[TOOL!]"          # a poisoned tool was hidden from the AI
     args = json.dumps(e.get("arguments", {}), ensure_ascii=False)
     if len(args) > 80:
         args = args[:80] + "..."
     print(f"{e.get('time', '')}  {label}  {e.get('server')}/{e.get('tool')}  {args}")
     if e.get("status") != "ok" and e.get("reason"):
         print(f"{'':27}reason: {e['reason']}")
+    for finding in e.get("findings", []):
+        print(f"{'':27}found:  {finding['detail']}")
+        if finding.get("snippet"):
+            print(f"{'':27}        \"{finding['snippet'][:100]}\"")
 
 
 def main() -> None:
