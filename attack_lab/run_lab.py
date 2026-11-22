@@ -60,6 +60,7 @@ async def run_scenario(s: dict, intent_check: dict | None = None) -> dict:
             "rules_file": str(ROOT / "rules.json"),
             "intent_check": intent_check or {"enabled": False},
             "approvals": {"enabled": False},   # the lab measures Warden alone: no popups
+            "extra_servers_file": None,        # ...and only the lab's fake tools
             "servers": {"lab": {"command": sys.executable, "args": [str(LAB / "lab_server.py")]}},
         }))
         params = StdioServerParameters(

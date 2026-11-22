@@ -52,6 +52,7 @@ from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 
 from warden_approval import ask_user
+from warden_protect import default_servers_file
 from warden_intent import Activity, IntentChecker, IntentResult
 from warden_policy import STRICTNESS, Decision, Policy
 from warden_scanner import Finding, Scanner, serious, strip_hidden
@@ -265,9 +266,35 @@ def load_config(path: Path) -> dict[str, Any]:
         raise SystemExit(f"Config file not found: {path}")
     with path.open(encoding="utf-8") as f:
         config = json.load(f)
-    if not config.get("servers"):
+    config["servers"] = dict(config.get("servers") or {})
+    add_private_servers(config)
+    if not config["servers"]:
         raise SystemExit(f"No servers listed in {path}")
     return config
+
+
+def add_private_servers(config: dict[str, Any]) -> None:
+    """Add the tool servers that one-click Protect moved behind Warden (Stage 9).
+
+    They live in a private file in the user's AppData (default %LOCALAPPDATA%\\Warden\\servers.json),
+    not in the project, because server settings can contain API keys.
+    Set "extra_servers_file": null in warden_config.json to switch this off (tests do).
+    """
+    if "extra_servers_file" in config and not config["extra_servers_file"]:
+        return
+    path = Path(config.get("extra_servers_file") or default_servers_file())
+    if not path.exists():
+        return
+    try:
+        extra = json.loads(path.read_text(encoding="utf-8")).get("servers") or {}
+    except (OSError, ValueError) as exc:
+        log.error("Could not read protected servers from %s (%s) - those tools are unavailable", path, exc)
+        return
+    for name, spec in extra.items():
+        if name in config["servers"]:
+            log.warning("Protected server %r has the same name as one in warden_config.json - skipped", name)
+            continue
+        config["servers"][name] = spec
 
 
 def load_policy(config: dict[str, Any], config_path: Path) -> Policy | None:

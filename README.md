@@ -10,6 +10,8 @@ AI app  --->  WARDEN  --->  real tools (files, email, ...)
 
 **Current stage: 3 done (rules + scanner).** Every action is checked against `rules.json` (allow / ask / block), tool results are scanned for hidden prompt-injection attacks, and after an attack risky actions are blocked for the rest of the session. Run all tests with `python tests\run_tests.py`.
 
+**One-click Protect (Stage 9):** in the Warden App's Home tab, click **Protect** next to an AI app (Claude Desktop, Cursor, VS Code, Windsurf). Warden backs up its config, moves its tools behind Warden (into a private file in `%LOCALAPPDATA%\Warden`), and makes the app talk only to Warden. **Unprotect** puts everything back. Restart the AI app afterwards.
+
 **Warden App (Stage 8):** double-click `Warden App.cmd`. It shows whether you're protected, the history of what Warden stopped, and an Attack Lab button. While it's open, actions that need approval pop up with **Allow once / Deny**. If it's closed, those actions stay blocked.
 
 **Stories (Stage 7):** every block comes with a short plain-language explanation. See them with `python view_log.py --stories` (add `--follow` to watch live). Set `"language": "ar"` in `warden_config.json` for Arabic.

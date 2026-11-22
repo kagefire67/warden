@@ -35,8 +35,10 @@ from pathlib import Path
 from tkinter import messagebox, scrolledtext, ttk
 from typing import Any
 
+import warden_protect
 from warden_approval import ApprovalServer, app_is_running
 from warden_policy import Policy
+from warden_protect import ProtectError, Target
 
 WARDEN_DIR = Path(__file__).resolve().parent
 CONFIG = WARDEN_DIR / "warden_config.json"
@@ -62,14 +64,22 @@ def find_claude_configs() -> list[Path]:
 
 
 def protection_status(config_path: Path) -> tuple[str, list[str]]:
-    """("protected" | "not_protected" | "unreadable", [servers that SKIP Warden])."""
-    try:
-        servers = json.loads(config_path.read_text(encoding="utf-8-sig")).get("mcpServers") or {}
-    except (OSError, ValueError):
-        return "unreadable", []
-    via_warden = [name for name, s in servers.items() if any("warden_gateway" in str(a) for a in s.get("args", []))]
-    bypass = [name for name in servers if name not in via_warden]
-    return ("protected" if via_warden else "not_protected"), bypass
+    """("protected" | "not_protected" | "unreadable", [servers that SKIP Warden]) for a Claude Desktop config."""
+    return warden_protect.status(Target("Claude Desktop", "claude_desktop", config_path))
+
+
+def app_check(target: Target) -> tuple[bool | None, str]:
+    """One line for the Home tab about one AI app. None = nothing to protect yet (grey, not red)."""
+    state, bypass = warden_protect.status(target)
+    if state == "unreadable":
+        return False, f"{target.name}: its config could not be read, so Warden left it alone"
+    if state == "protected" and bypass:
+        return False, f"{target.name} goes through Warden, but these tools skip it: {', '.join(bypass)}"
+    if state == "protected":
+        return True, f"{target.name} goes through Warden"
+    if bypass:
+        return False, f"{target.name} is NOT protected ({len(bypass)} tools skip Warden)"
+    return None, f"{target.name}: no AI tools set up yet"
 
 
 def load_config() -> dict[str, Any]:
@@ -251,6 +261,9 @@ class WardenApp:
         ttk.Label(self.home, text="Protection checks", font=("Segoe UI", 12, "bold")).pack(anchor="w")
         self.checks = ttk.Frame(self.home)
         self.checks.pack(fill="x", pady=(6, 16))
+        ttk.Label(self.home, text="AI apps on this PC", font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        self.apps = ttk.Frame(self.home)
+        self.apps.pack(fill="x", pady=(6, 16))
         ttk.Label(self.home, text="Today", font=("Segoe UI", 12, "bold")).pack(anchor="w")
         self.today = ttk.Label(self.home, text="", font=("Segoe UI", 11))
         self.today.pack(anchor="w", pady=(6, 16))
@@ -264,22 +277,15 @@ class WardenApp:
         def work() -> None:
             config = load_config()
             checks: list[tuple[bool | None, str]] = [(True, "Approval popups are on (this window is open)")]
-            configs = find_claude_configs()
-            if not configs:
-                checks.append((False, "Claude Desktop config not found"))
-            for path in configs:
-                state, bypass = protection_status(path)
-                if state == "protected":
-                    checks.append((True, "Claude Desktop goes through Warden"))
-                elif state == "not_protected":
-                    checks.append((False, "Claude Desktop is NOT protected (Warden is not in its config)"))
-                else:
-                    checks.append((False, f"Claude Desktop config could not be read ({path.name})"))
-                if bypass:
-                    checks.append((False, f"These tools skip Warden: {', '.join(bypass)}"))
+            targets = warden_protect.detect_targets()
+            if not targets:
+                checks.append((False, "No supported AI app found on this PC"))
+            apps = [(t, app_check(t), warden_protect.status(t)[0]) for t in targets]
+            checks += [check for _, check, _ in apps]
             checks.append(check_rules(config))
             checks.append(check_ai(config))
             self.inbox.put(("status", checks))
+            self.inbox.put(("apps", apps))
         threading.Thread(target=work, daemon=True).start()
         self.root.after(15000, self.refresh_status)
 
@@ -293,7 +299,10 @@ class WardenApp:
             tk.Label(row, text=mark, fg=color, font=("Segoe UI Symbol", 12, "bold"), width=2).pack(side="left")
             ttk.Label(row, text=text, font=("Segoe UI", 11)).pack(side="left")
         problems = [t for ok, t in checks if ok is False]
-        if not problems:
+        if not any(ok for ok, t in checks if "goes through Warden" in t):
+            self.status.config(text="✖  Not protected", fg=RED)
+            self.substatus.config(text="No AI app goes through Warden yet. Click Protect below.")
+        elif not problems:
             self.status.config(text="✔  You're protected", fg=GREEN)
             self.substatus.config(text="Warden is checking every action your AI takes.")
         elif any("NOT protected" in p or "rules" in p for p in problems):
@@ -302,6 +311,55 @@ class WardenApp:
         else:
             self.status.config(text="⚠  Protected, with warnings", fg=AMBER)
             self.substatus.config(text=problems[0])
+
+    def show_apps(self, apps: list[tuple[Target, tuple[bool | None, str], str]]) -> None:
+        for child in self.apps.winfo_children():
+            child.destroy()
+        for target, (_, text), state in apps:
+            row = ttk.Frame(self.apps)
+            row.pack(fill="x", pady=2)
+            label = "Unprotect" if state == "protected" else "Protect"
+            button = ttk.Button(row, text=label, width=12,
+                                command=lambda t=target, s=state: self.toggle_protection(t, s))
+            button.pack(side="left")
+            if state == "unreadable":
+                button.state(["disabled"])
+            ttk.Label(row, text=f"  {target.name}", font=("Segoe UI", 11, "bold")).pack(side="left")
+            ttk.Label(row, text=f"   {target.config}", font=("Segoe UI", 8), foreground=GREY).pack(side="left")
+
+    def toggle_protection(self, target: Target, state: str) -> None:
+        """One-click Protect / Unprotect, always with a confirmation and a backup."""
+        if state == "protected":
+            if not messagebox.askyesno(f"Unprotect {target.name}?",
+                                       f"{target.name} will talk to its tools directly again, WITHOUT Warden checking them.\n\n"
+                                       "A backup of its config is made first. Continue?"):
+                return
+            action, verb = warden_protect.unprotect, "unprotected"
+        else:
+            if not messagebox.askyesno(f"Protect {target.name}?",
+                                       f"Warden will:\n"
+                                       f"  1. back up {target.name}'s config file,\n"
+                                       f"  2. move its tools behind Warden (kept in your private Warden folder),\n"
+                                       f"  3. make {target.name} talk only to Warden.\n\n"
+                                       "You can undo this any time with Unprotect. Continue?"):
+                return
+            action, verb = warden_protect.protect, "protected"
+        try:
+            result = action(target)
+        except (ProtectError, OSError) as exc:
+            messagebox.showerror("Nothing was changed", str(exc))
+            return
+        lines = [f"{target.name} is now {verb}."]
+        if result.moved:
+            lines.append(("Tools moved behind Warden: " if verb == "protected" else "Tools given back: ")
+                         + ", ".join(result.moved))
+        if result.left:
+            lines.append("Online tools Warden cannot protect yet (they still skip it): " + ", ".join(result.left))
+        if result.backup:
+            lines.append(f"Backup: {result.backup}")
+        lines.append(f"\nFully restart {target.name} (also from the system tray) to finish.")
+        messagebox.showinfo("Done", "\n".join(lines))
+        self.refresh_status()
 
     # --- History ------------------------------------------------------------
 
@@ -409,6 +467,8 @@ class WardenApp:
                 kind, *data = self.inbox.get_nowait()
                 if kind == "status":
                     self.show_status(data[0])
+                elif kind == "apps":
+                    self.show_apps(data[0])
                 elif kind == "approval":
                     ApprovalPopup(self, *data)
                 elif kind == "lab_line":

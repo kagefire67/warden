@@ -37,6 +37,8 @@ def warden_params(tmp_path: Path, extra_config: dict | None = None) -> tuple[Std
         "servers": {"fake": {"command": sys.executable, "args": [FAKE_SERVER]}},
         # Never talk to the user's real Warden App from tests: use a private (missing) app file.
         "approvals": {"enabled": True, "timeout_seconds": 5, "app_file": str(tmp_path / "no_app.json")},
+        # ...and never load the user's real protected servers either.
+        "extra_servers_file": None,
     }
     config.update(extra_config or {})
     config_path.write_text(json.dumps(config))
