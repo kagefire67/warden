@@ -51,6 +51,7 @@ from mcp import Client, StdioServerParameters
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 
+from warden_approval import ask_user
 from warden_intent import Activity, IntentChecker, IntentResult
 from warden_policy import STRICTNESS, Decision, Policy
 from warden_scanner import Finding, Scanner, serious, strip_hidden
@@ -381,8 +382,11 @@ def build_server(
     checker: IntentChecker | None = None,
     session: Session | None = None,
     language: str = "en",
+    approvals: dict[str, Any] | None = None,
 ) -> Server:
     session = session or Session()
+    approvals = {"enabled": True, "timeout_seconds": 60, **(approvals or {})}
+    app_file = Path(approvals["app_file"]) if approvals.get("app_file") else None
 
     async def on_list_tools(ctx: Any, params: types.PaginatedRequestParams | None) -> types.ListToolsResult:
         return types.ListToolsResult(tools=exposed)
@@ -408,13 +412,38 @@ def build_server(
             entry["ai_check"] = ai.as_dict()
             decision = combine(decision, ai)
 
+        # --- Step 1c: "ask" -> really ask the user in the Warden App (Stage 8)
+        # Only a click in the app can approve. No app / no answer / Deny = blocked (fail safe).
+        approval: str | None = None
+        if decision.action == "ask" and approvals["enabled"]:
+            pending = make_story(warden_story.action_stopped, params.name, arguments, "ask", decision.reason,
+                                 decision.rule_ids, session.taint_source, entry.get("ai_check"), language,
+                                 approval="pending")
+            approval = await ask_user({
+                "id": entry["id"],
+                "title": pending.title if pending else f"Needs your approval: {params.name}",
+                "story": pending.text if pending else decision.reason,
+                "server": route.server,
+                "tool": route.tool,
+                "arguments": json.dumps(arguments, ensure_ascii=False)[:500],
+            }, timeout=float(approvals["timeout_seconds"]), app_file=app_file)
+            entry["approval"] = approval or "no_app"
+            if approval == "allow":
+                approved = make_story(warden_story.action_stopped, params.name, arguments, "ask", decision.reason,
+                                      decision.rule_ids, session.taint_source, entry.get("ai_check"), language,
+                                      approval="allow")
+                if approved:
+                    entry.update(story=approved.text, story_title=approved.title)
+                decision = Decision("allow", f"You approved this. ({decision.reason})",
+                                    [*decision.rule_ids, "user-approved"])
+
         entry.update(decision=decision.action, reason=decision.reason, rules=decision.rule_ids)
 
         if not decision.allowed:
             entry["status"] = "blocked"
             story = make_story(warden_story.action_stopped, params.name, arguments, decision.action,
                                decision.reason, decision.rule_ids, session.taint_source,
-                               entry.get("ai_check"), language)
+                               entry.get("ai_check"), language, approval=approval)
             if story:
                 entry.update(story=story.text, story_title=story.title)
             action_log.write(entry)
@@ -517,7 +546,8 @@ async def main() -> None:
         exposed, routes = await connect_servers(config, stack, scanner, action_log, language)
         if not routes:
             log.error("No tool servers could be started - check warden_config.json")
-        server = build_server(exposed, routes, action_log, policy, scanner, checker, language=language)
+        server = build_server(exposed, routes, action_log, policy, scanner, checker, language=language,
+                              approvals=config.get("approvals"))
         if checker.enabled:
             # Load the AI model in the background, so the first real check is fast.
             warm_up = asyncio.create_task(checker.warm_up())  # noqa: F841 (keep a reference)

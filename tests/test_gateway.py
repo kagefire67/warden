@@ -18,6 +18,7 @@ import mcp_types as types
 from mcp import Client, StdioServerParameters
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 FAKE_SERVER = str(ROOT / "tests" / "fake_tools_server.py")
 
 
@@ -32,7 +33,11 @@ def texts(result: types.CallToolResult) -> list[str]:
 def warden_params(tmp_path: Path, extra_config: dict | None = None) -> tuple[StdioServerParameters, Path]:
     config_path = tmp_path / "config.json"
     log_path = tmp_path / "actions.jsonl"
-    config = {"servers": {"fake": {"command": sys.executable, "args": [FAKE_SERVER]}}}
+    config = {
+        "servers": {"fake": {"command": sys.executable, "args": [FAKE_SERVER]}},
+        # Never talk to the user's real Warden App from tests: use a private (missing) app file.
+        "approvals": {"enabled": True, "timeout_seconds": 5, "app_file": str(tmp_path / "no_app.json")},
+    }
     config.update(extra_config or {})
     config_path.write_text(json.dumps(config))
     params = StdioServerParameters(
@@ -205,6 +210,47 @@ async def quoted_phrase_session(tmp_path: Path) -> None:
     print("PASS  a quoted attack phrase is logged as 'info' and does not lock the session")
 
 
+async def approval_session(tmp_path: Path) -> None:
+    """Stage 8: 'ask' really asks the user through the Warden App (a test app that answers automatically)."""
+    from warden_approval import ApprovalServer
+
+    asked = []
+
+    def decide(request):                 # pretend user: allows the recruiter email, denies everything else
+        asked.append(request)
+        return "allow" if "recruiter" in request.get("arguments", "") else "deny"
+
+    app = ApprovalServer(decide, app_file=tmp_path / "app.json")
+    app.start()
+    params, log_path = warden_params(tmp_path, {"approvals": {"enabled": True, "timeout_seconds": 5,
+                                                              "app_file": str(tmp_path / "app.json")}})
+    try:
+        async with Client(params) as client:
+            result = await client.call_tool("fake__send_email", {"to": "recruiter@talent.example", "subject": "CV", "body": "hi"})
+            assert not result.is_error and "sent (fake)" in texts(result)[0], result
+            print("PASS  approvals: you click Allow -> the action runs")
+
+            result = await client.call_tool("fake__delete_file", {"path": "old.txt"})
+            assert result.is_error and "You chose Deny" in texts(result)[0], result
+            print("PASS  approvals: you click Deny -> blocked, and the AI is told why")
+
+            assert "The AI tried to send an email to recruiter@talent.example" in asked[0]["story"]
+            print("PASS  approvals: the popup shows the plain-language story")
+
+            result = await client.call_tool("fake__read_file", {"path": "attack_email.txt"})
+            result = await client.call_tool("fake__send_email", {"to": "recruiter@talent.example", "subject": "x", "body": "x"})
+            assert result.is_error and len(asked) == 2, "after an attack, the lockdown is never offered for approval"
+            print("PASS  approvals: the lockdown after an attack cannot be approved")
+    finally:
+        app.stop()
+
+    entries = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    approved = next(e for e in entries if e.get("approval") == "allow")
+    assert approved["status"] == "ok" and "user-approved" in approved["rules"] and approved["story"].startswith("The AI tried")
+    assert any(e.get("approval") == "deny" and e["status"] == "blocked" for e in entries)
+    print("PASS  approvals: Allow and Deny are written to the log")
+
+
 async def run_test() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         await main_session(Path(tmp))
@@ -214,6 +260,8 @@ async def run_test() -> None:
         await ai_check_session(Path(tmp))
     with tempfile.TemporaryDirectory() as tmp:
         await quoted_phrase_session(Path(tmp))
+    with tempfile.TemporaryDirectory() as tmp:
+        await approval_session(Path(tmp))
     print("\nAll tests passed.")
 
 

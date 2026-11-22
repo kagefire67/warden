@@ -2,6 +2,10 @@
   "language": "en",
   "rules_file": "rules.json",
   "use_llm_guard": false,
+  "approvals": {
+    "enabled": true,
+    "timeout_seconds": 60
+  },
   "intent_check": {
     "enabled": true,
     "backend": "ollama",

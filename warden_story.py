@@ -62,7 +62,11 @@ TEXT: dict[str, dict[str, str]] = {
         "title_ask": "Needs your approval: {action}",
         "prefix_block": "Warden blocked this action: ",
         "prefix_ask": "Warden stopped this action because it needs your approval: ",
-        "suffix_ask": " Approval popups are not available yet, so the action was not run.",
+        "suffix_no_app": " The Warden App is not running, so nobody could approve it and the action was not run.",
+        "suffix_deny": " You chose Deny, so the action was not run.",
+        "suffix_timeout": " Nobody answered the approval request in time, so the action was not run.",
+        "title_allowed": "Allowed by you: {action}",
+        "allowed": " You chose Allow.",
         "tool_title": "Dangerous tool hidden: {tool}",
         "tool_body": "The tool '{tool}' from '{server}' has instructions for the AI hidden in its description ({intents}). "
                      "Warden hid this tool so the AI cannot use it.",
@@ -98,7 +102,11 @@ TEXT: dict[str, dict[str, str]] = {
         "title_ask": "يحتاج إلى موافقتك: {action}",
         "prefix_block": "منع Warden هذا الإجراء: ",
         "prefix_ask": "أوقف Warden هذا الإجراء لأنه يحتاج إلى موافقتك: ",
-        "suffix_ask": " نوافذ الموافقة غير متاحة بعد، لذلك لم يتم تنفيذ الإجراء.",
+        "suffix_no_app": " تطبيق Warden غير مفتوح، لذلك لم يتمكن أحد من الموافقة ولم يتم تنفيذ الإجراء.",
+        "suffix_deny": " اخترت الرفض، لذلك لم يتم تنفيذ الإجراء.",
+        "suffix_timeout": " لم يرد أحد على طلب الموافقة في الوقت المحدد، لذلك لم يتم تنفيذ الإجراء.",
+        "title_allowed": "سمحت به: {action}",
+        "allowed": " اخترت السماح.",
         "tool_title": "تم إخفاء أداة خطرة: {tool}",
         "tool_body": "الأداة '{tool}' من '{server}' تحتوي في وصفها على تعليمات مخفية للذكاء الاصطناعي ({intents}). "
                      "أخفى Warden هذه الأداة حتى لا يستطيع الذكاء الاصطناعي استخدامها.",
@@ -283,8 +291,11 @@ def attack_found(tool: str, arguments: dict[str, Any], findings: list[dict[str, 
 
 def action_stopped(tool: str, arguments: dict[str, Any], action: str, reason: str, rule_ids: list[str],
                    caused_by: dict[str, Any] | None = None, ai_check: dict[str, Any] | None = None,
-                   language: str = "en") -> Story:
-    """An action was blocked or needs approval. Explains what the AI tried and why it was stopped."""
+                   language: str = "en", approval: str | None = None) -> Story:
+    """An action was blocked or needed approval. Explains what the AI tried and why it was stopped.
+
+    approval (only for "ask"): None = Warden App not running, "deny", "timeout", or "allow".
+    """
     lang = _lang(language)
     t = TEXT[lang]
     what = describe_action(tool, arguments, lang)
@@ -303,8 +314,13 @@ def action_stopped(tool: str, arguments: dict[str, Any], action: str, reason: st
         why = " " + (" ".join(translated) if translated and lang != "en" else reason)
 
     body = t["tried"].format(action=what) + why
+    if action == "ask" and approval == "pending":     # shown inside the approval popup
+        return Story(t["title_ask"].format(action=what), body, body)
+    if action == "ask" and approval == "allow":
+        return Story(t["title_allowed"].format(action=what), body + t["allowed"], body + t["allowed"])
     if action == "ask":
-        return Story(t["title_ask"].format(action=what), body, t["prefix_ask"] + body + t["suffix_ask"])
+        suffix = {"deny": t["suffix_deny"], "timeout": t["suffix_timeout"]}.get(approval or "", t["suffix_no_app"])
+        return Story(t["title_ask"].format(action=what), body + suffix, t["prefix_ask"] + body + suffix)
     return Story(t["title_block"].format(action=what), body, t["prefix_block"] + body)
 
 
