@@ -2,7 +2,7 @@
   "servers": {
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:/Users/YOUR_NAME/WardenTest"]
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:/Users/asus/WardenTest"]
     }
   }
 }
