@@ -10,6 +10,8 @@ AI app  --->  WARDEN  --->  real tools (files, email, ...)
 
 **Current stage: 3 done (rules + scanner).** Every action is checked against `rules.json` (allow / ask / block), tool results are scanned for hidden prompt-injection attacks, and after an attack risky actions are blocked for the rest of the session. Run all tests with `python tests\run_tests.py`.
 
+**Attack Lab (Stage 4):** `python attack_lab\run_lab.py` replays 22 fake attack and safe scenarios through Warden and writes a score report to `attack_lab\results.md`.
+
 ## Files
 
 | File | What it is |
