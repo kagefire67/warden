@@ -77,7 +77,7 @@ async def run_scenario(s: dict, intent_check: dict | None = None) -> dict:
         flagged = [e for e in entries if e.get("event") == "tool_flagged" and e.get("tool") == "sync_backup"]
         hidden = "lab__sync_backup" not in tool_names
         ok = hidden and flagged
-        note = flagged[0]["findings"][0]["detail"] if flagged else ""
+        note = (flagged[0].get("story") or flagged[0]["findings"][0]["detail"]) if flagged else ""
         return {"outcome": "PASS" if ok else "MISS", "got": "tool hidden" if hidden else "tool shown", "note": note}
 
     calls = [e for e in entries if e.get("event") != "tool_flagged"]
@@ -108,7 +108,11 @@ def score(s: dict, calls: list[dict]) -> dict:
     ai_notes = [c["ai_check"] for i, c in enumerate(calls) if i in action_idx and "ai_check" in c]
     if ai_notes:
         got += f" (AI risk {'/'.join(str(a['risk']) for a in ai_notes)})"
-    if findings:
+    # Stage 7: prefer Warden's own plain-language story as the explanation.
+    stories = [c["story"] for c in calls if c.get("story")]
+    if stories:
+        note = stories[0]
+    elif findings:
         note = findings[0]["detail"]
     elif any(a["decision"] != "allow" for a in ai_notes):
         note = "AI check: " + next(a["reason"] for a in ai_notes if a["decision"] != "allow")

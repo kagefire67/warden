@@ -96,9 +96,13 @@ async def main_session(tmp_path: Path) -> None:
         print("PASS  hidden attack is detected, stripped, and a warning is added (scenario 1)")
 
         # --- After the attack, risky actions are blocked -----------------------
+        assert "attack_email.txt" in parts[0] and "billing-update" not in parts[0], parts[0]
+        print("PASS  the warning tells the AI the story, without repeating the attacker's words")
+
         result = await client.call_tool("fake__write_file", {"path": "todo.txt", "content": "x"})
         assert result.is_error and "hidden attack" in texts(result)[0], result
-        print("PASS  after the attack, writing is blocked (taint)")
+        assert "attack_email.txt" in texts(result)[0], "the block story names the content that caused the lock"
+        print("PASS  after the attack, writing is blocked (taint), and the story says why")
 
         result = await client.call_tool("fake__send_email", {"to": "teammate@yourcompany.com", "subject": "Hi", "body": "x"})
         assert result.is_error and "blocked" in texts(result)[0], result
@@ -129,6 +133,9 @@ async def main_session(tmp_path: Path) -> None:
     assert attack["tainted_session"] is True and attack["findings"], attack
     assert not has_hidden_chars(attack["result_preview"])
     assert calls[8]["rules"] == ["tainted-outbound"], calls[8]
+    assert "billing-update@external.example" in attack["story"], "the user's story quotes the hidden line"
+    assert flagged[0].get("story") and calls[4].get("story") and calls[5].get("story")
+    print("PASS  stories are written to the log for attacks, blocks, asks and poisoned tools")
     print("PASS  every action, decision and finding was written to the log")
 
 

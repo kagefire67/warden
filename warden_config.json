@@ -1,4 +1,5 @@
 {
+  "language": "en",
   "rules_file": "rules.json",
   "use_llm_guard": false,
   "intent_check": {

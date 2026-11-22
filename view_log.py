@@ -1,7 +1,9 @@
 """Show what the AI has been doing, from Warden's action log.
 
-  python view_log.py            show every logged action
-  python view_log.py --follow   keep watching and show new actions live
+  python view_log.py                     every logged action (technical view)
+  python view_log.py --follow            keep watching and show new actions live
+  python view_log.py --stories           only what Warden stopped, as plain-language stories
+  python view_log.py --stories --follow  live stories
 """
 
 import argparse
@@ -15,6 +17,7 @@ LABELS = {"ok": "[ALLOW]", "blocked": "[BLOCK]", "error": "[ERROR]"}
 
 
 def show(line: str) -> None:
+    """Technical view: one line per action, plus reasons and findings."""
     try:
         e = json.loads(line)
     except json.JSONDecodeError:
@@ -39,14 +42,35 @@ def show(line: str) -> None:
         print(f"{'':27}{tag} {finding['detail']}")
         if finding.get("snippet"):
             print(f"{'':27}        \"{finding['snippet'][:100]}\"")
+    if e.get("story"):
+        print(f"{'':27}story:  {e['story']}")
+
+
+ICONS = {"ask": "✋", "block": "⛔"}
+
+
+def show_story(line: str) -> None:
+    """Plain-language view: only the moments where Warden stepped in."""
+    try:
+        e = json.loads(line)
+    except json.JSONDecodeError:
+        return
+    if not e.get("story"):
+        return
+    icon = "⚠️" if e.get("tainted_session") and e.get("status") == "ok" else ICONS.get(e.get("decision"), "•")
+    when = e.get("time", "").replace("T", " ")[:16]
+    print(f"{icon}  {e.get('story_title', '')}   ({when} UTC)")
+    print(f"    {e['story']}\n")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--follow", action="store_true", help="watch for new actions")
+    parser.add_argument("--stories", action="store_true", help="only plain-language stories")
     parser.add_argument("--log", type=Path, default=LOG)
     args = parser.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
+    render = show_story if args.stories else show
 
     if not args.log.exists():
         print(f"No actions logged yet ({args.log}).")
@@ -57,11 +81,11 @@ def main() -> None:
 
     with args.log.open(encoding="utf-8") as f:
         for line in f:
-            show(line)
+            render(line)
         while args.follow:
             line = f.readline()
             if line:
-                show(line)
+                render(line)
             else:
                 time.sleep(0.5)
 
