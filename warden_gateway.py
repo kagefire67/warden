@@ -116,8 +116,9 @@ def combine(rules: Decision, ai: IntentResult) -> Decision:
     so the AI can make Warden stricter but never looser than the rules."""
     if STRICTNESS[ai.decision] <= STRICTNESS[rules.action]:
         return rules
-    risk = f" (risk {ai.risk}/10)" if ai.risk is not None else ""
-    return Decision(ai.decision, f"Warden's AI check: {ai.reason}{risk}", [*rules.rule_ids, "ai-intent"])
+    if ai.risk is None:   # the check could not run: its reason already says so
+        return Decision(ai.decision, ai.reason, [*rules.rule_ids, "ai-intent"])
+    return Decision(ai.decision, f"Warden's AI check: {ai.reason} (risk {ai.risk}/10)", [*rules.rule_ids, "ai-intent"])
 
 
 def blocked_message(decision: Decision, story: Story | None = None) -> str:

@@ -116,6 +116,12 @@ def test_ai_cannot_loosen_the_rules():
     assert combine(rules_ask, IntentResult(1, "fine", "allow")).action == "ask"
 
 
+def test_ai_down_reason_is_not_repeated():
+    merged = combine(Decision("allow", "No rule matched"),
+                     IntentResult(None, "Warden's AI check was not available (URLError), so ...", "ask"))
+    assert merged.action == "ask" and merged.reason.count("Warden's AI check") == 1, merged.reason
+
+
 def test_ai_can_make_warden_stricter():
     merged = combine(Decision("ask", "outside email", ["external-email"]), IntentResult(9, "leak", "block"))
     assert merged.action == "block" and "ai-intent" in merged.rule_ids and "risk 9/10" in merged.reason
