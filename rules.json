@@ -1,0 +1,43 @@
+{
+  "rules": [
+    {
+      "id": "secret-files",
+      "decision": "block",
+      "reason": "The AI tried to access a file that looks like it holds passwords or secret keys.",
+      "argument_matches": "(password|passwd|\\.env\\b|credential|secret|id_rsa|id_ed25519|\\.pem\\b|\\.key\\b|wallet)"
+    },
+    {
+      "id": "run-commands",
+      "decision": "ask",
+      "reason": "The AI wants to run a command on your computer.",
+      "tools": ["*exec*", "*shell*", "*run_command*", "*terminal*", "*powershell*", "*bash*"]
+    },
+    {
+      "id": "delete",
+      "decision": "ask",
+      "reason": "The AI wants to delete something.",
+      "tools": ["*delete*", "*remove*", "*trash*", "*erase*", "*drop*", "*destroy*"]
+    },
+    {
+      "id": "money",
+      "decision": "ask",
+      "reason": "The AI wants to move money or make a payment.",
+      "tools": ["*pay*", "*transfer*", "*purchase*", "*checkout*", "*send_money*", "*refund*"]
+    },
+    {
+      "id": "external-email",
+      "decision": "ask",
+      "reason": "The AI wants to send an email outside your trusted domains.",
+      "tools": ["*send*", "*forward*", "*reply*", "*draft*"],
+      "argument": {"to": "@"},
+      "unless_argument": {"to": "^[^,;]*@(yourcompany\\.com|rit\\.edu)\\s*$"}
+    },
+    {
+      "id": "tainted-outbound",
+      "decision": "block",
+      "reason": "Earlier, the AI read content containing a hidden attack. Sending, sharing or deleting is blocked for the rest of this session.",
+      "tools": ["*send*", "*forward*", "*reply*", "*share*", "*upload*", "*post*", "*publish*", "*delete*", "*remove*", "*move*", "*write*", "*create*", "*edit*", "*comment*"],
+      "only_if_tainted": true
+    }
+  ]
+}
