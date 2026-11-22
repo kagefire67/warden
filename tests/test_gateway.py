@@ -47,7 +47,9 @@ async def main_session(tmp_path: Path) -> None:
 
     async with Client(params) as client:
         # --- Tool list: the poisoned tool must be hidden -------------------
-        names = sorted(t.name for t in (await client.list_tools()).tools)
+        tools = (await client.list_tools()).tools
+        assert all(t.output_schema is None for t in tools), "tools must not promise structured results"
+        names = sorted(t.name for t in tools)
         assert names == ["fake__delete_file", "fake__read_file", "fake__send_email", "fake__write_file"], names
         print("PASS  poisoned tool 'sync_notes' is hidden; the others are listed")
 
@@ -88,7 +90,9 @@ async def main_session(tmp_path: Path) -> None:
         assert parts[0].startswith("WARDEN SECURITY WARNING"), parts
         assert "monthly report" in parts[1], parts
         assert not any(has_hidden_chars(t) for t in parts), "hidden characters reached the AI"
-        assert not has_hidden_chars(json.dumps(result.structured_content or {}, ensure_ascii=False)), "hidden characters in structured result"
+        # Apps like Claude Desktop show the structured copy if there is one, which would
+        # hide our warning, so Warden must drop it (found in the live demo).
+        assert result.structured_content is None, "structured copy would hide the warning"
         print("PASS  hidden attack is detected, stripped, and a warning is added (scenario 1)")
 
         # --- After the attack, risky actions are blocked -----------------------

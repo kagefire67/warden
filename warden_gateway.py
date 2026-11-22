@@ -320,7 +320,9 @@ async def connect_servers(
             if len(public_name) > 64:
                 log.warning("Tool name %r is longer than 64 characters; some AI apps may reject it", public_name)
             description = f"[{server_name}] {strip_hidden(tool.description or '')}".strip()
-            exposed.append(tool.model_copy(update={"name": public_name, "description": description}))
+            # output_schema is removed: it promises the app a structured result, but
+            # Warden may drop the structured copy to show its warning (see on_call_tool).
+            exposed.append(tool.model_copy(update={"name": public_name, "description": description, "output_schema": None}))
             routes[public_name] = Route(server=server_name, tool=tool.name, client=client)
 
         log.info("Protecting server %r (%d tools, %d hidden as poisoned)", server_name, len(tools) - hidden_count, hidden_count)
@@ -396,7 +398,13 @@ def build_server(
             session.tainted = True
             session.taint_reasons.append(f"{params.name}: {findings[0].detail}")
             entry.update(findings=[f.as_dict() for f in findings], tainted_session=True)
-            result = result.model_copy(update={"content": [warning_block(findings), *result.content]})
+            # Some AI apps (Claude Desktop included) show the AI the structured copy of a
+            # result instead of the text blocks. Drop it, so the AI is forced to read the
+            # text version - which starts with our warning.
+            result = result.model_copy(update={
+                "content": [warning_block(findings), *result.content],
+                "structured_content": None,
+            })
 
         entry.update(status="error" if result.is_error else "ok", result_preview=preview(result))
         action_log.write(entry)
