@@ -42,6 +42,8 @@ from typing import Any
 
 import warden_protect
 from warden_approval import ApprovalServer, app_is_running
+from warden_intent import DEFAULTS as INTENT_DEFAULTS
+from warden_intent import start_ollama
 from warden_policy import Policy
 from warden_protect import ProtectError, Target
 
@@ -345,6 +347,11 @@ def main() -> None:
 
     server = ApprovalServer(decide)
     server.start()
+
+    # If the AI check is on, start Ollama in the background so it is ready when needed.
+    ai_settings = load_config().get("intent_check") or {}
+    if ai_settings.get("enabled") and ai_settings.get("backend", "ollama") == "ollama":
+        threading.Thread(target=start_ollama, args=({**INTENT_DEFAULTS, **ai_settings},), daemon=True).start()
     window = webview.create_window(
         "Warden", str(UI_DIR / "index.html"), js_api=Api(),
         width=1060, height=760, min_size=(820, 560), confirm_close=True)

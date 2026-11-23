@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 class FakeOllama:
-    def __init__(self, mode: str = "normal") -> None:
+    def __init__(self, mode: str = "normal", port: int = 0) -> None:
         self.mode = mode
         self.requests: list[dict] = []
         outer = self
@@ -19,6 +19,14 @@ class FakeOllama:
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):  # keep test output quiet
                 pass
+
+            def do_GET(self):                              # "is Ollama running?" check
+                data = json.dumps({"models": [{"name": "qwen3:8b"}]}).encode()
+                self.send_response(200 if self.path == "/api/tags" else 404)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
 
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -41,7 +49,7 @@ class FakeOllama:
                 self.end_headers()
                 self.wfile.write(data)
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)   # port 0 = any free port
+        self.server = ThreadingHTTPServer(("127.0.0.1", port), Handler)   # port 0 = any free port
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 

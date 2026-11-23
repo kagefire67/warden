@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from fake_ollama import FakeOllama  # noqa: E402
 from warden_gateway import combine  # noqa: E402
-from warden_intent import Activity, IntentChecker, IntentResult  # noqa: E402
+from warden_intent import Activity, IntentChecker, IntentResult, start_ollama  # noqa: E402
 from warden_policy import Decision  # noqa: E402
 
 
@@ -125,6 +125,43 @@ def test_ai_down_reason_is_not_repeated():
 def test_ai_can_make_warden_stricter():
     merged = combine(Decision("ask", "outside email", ["external-email"]), IntentResult(9, "leak", "block"))
     assert merged.action == "block" and "ai-intent" in merged.rule_ids and "risk 9/10" in merged.reason
+
+
+# --- Starting Ollama by itself --------------------------------------------------------
+
+def test_running_ollama_is_not_started_again():
+    fake, launched = FakeOllama(), []
+    try:
+        assert start_ollama({"url": fake.url}, wait_seconds=1, launch=launched.append)
+    finally:
+        fake.stop()
+    assert launched == [], "Ollama was already up, nothing should be started"
+
+
+def test_ollama_is_started_when_it_is_off():
+    url, started = free_port_url(), []
+
+    def launch(_command):                     # pretend to start Ollama: bring up the fake one
+        started.append(FakeOllama(port=int(url.rsplit(":", 1)[1])))
+
+    try:
+        assert start_ollama({"url": url}, wait_seconds=5, launch=launch)
+    finally:
+        for fake in started:
+            fake.stop()
+    assert len(started) == 1
+
+
+def test_never_starts_anything_for_a_remote_address():
+    launched = []
+    assert not start_ollama({"url": "http://ollama.invalid:11434"}, wait_seconds=1, launch=launched.append)
+    assert launched == [], "Warden only starts Ollama on this computer"
+
+
+def test_gives_up_if_ollama_never_answers():
+    launched = []
+    assert not start_ollama({"url": free_port_url()}, wait_seconds=1.5, launch=launched.append)
+    assert len(launched) == 1
 
 
 def run_all() -> int:

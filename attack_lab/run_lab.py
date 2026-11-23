@@ -177,8 +177,13 @@ async def main() -> None:
     if use_ai:
         # Load the model once before starting, so no scenario times out on the cold start.
         sys.path.insert(0, str(ROOT))
-        from warden_intent import IntentChecker
-        print("Loading the AI model (the first time can take a minute or two)...")
+        from warden_intent import IntentChecker, ollama_is_up, start_ollama
+        if not ollama_is_up(intent_check["url"]):
+            print("Ollama is not running - starting it...", flush=True)
+            if not await asyncio.to_thread(start_ollama, intent_check):
+                print("Could not start Ollama. Install it from ollama.com, or run the lab without the AI check.")
+                sys.exit(1)
+        print("Loading the AI model (the first time can take a minute or two)...", flush=True)
         await IntentChecker(intent_check).warm_up()
 
     async def guarded(s):

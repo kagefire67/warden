@@ -16,7 +16,7 @@ AI app  --->  WARDEN  --->  real tools (files, email, ...)
 
 **Stories (Stage 7):** every block comes with a short plain-language explanation. See them with `python view_log.py --stories` (add `--follow` to watch live). Set `"language": "ar"` in `warden_config.json` for Arabic.
 
-**AI check (Stage 5):** for risky actions Warden asks a local AI (Ollama + `qwen3:8b`) whether the action looks like an attack. Setup: install Ollama from ollama.com, then run `ollama pull qwen3:8b` (about 5 GB). Switch it off with `"enabled": false` under `intent_check` in `warden_config.json`. If Ollama is not running, risky actions need approval (fail safe).
+**AI check (Stage 5):** for risky actions Warden asks a local AI (Ollama + `qwen3:8b`) whether the action looks like an attack. Setup: install Ollama from ollama.com, then run `ollama pull qwen3:8b` (about 5 GB). Switch it off with `"enabled": false` under `intent_check` in `warden_config.json`. The Warden App and `run_lab.py --ai` start Ollama by themselves if it is off. If Ollama is still not running, risky actions need approval (fail safe).
 
 **Attack Lab (Stage 4):** `python attack_lab\run_lab.py` replays 22 fake attack and safe scenarios through Warden and writes a score report to `attack_lab\results.md`. Add `--ai` to include the AI check (report in `attack_lab\results_ai.md`).
 

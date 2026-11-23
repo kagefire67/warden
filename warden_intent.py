@@ -30,10 +30,15 @@ import asyncio
 import fnmatch
 import json
 import logging
+import os
 import secrets
+import shutil
+import subprocess
 import time
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 log = logging.getLogger("warden")
@@ -96,6 +101,65 @@ class Activity:
 
 def short(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit] + " [...]"
+
+
+# ---------------------------------------------------------------------------
+# Starting Ollama by itself (used by the Warden App and the Attack Lab)
+# ---------------------------------------------------------------------------
+
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def ollama_is_up(url: str, timeout: float = 2) -> bool:
+    """True if an Ollama server answers at this address."""
+    try:
+        with urllib.request.urlopen(url.rstrip("/") + "/api/tags", timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def find_ollama() -> list[str] | None:
+    """The command that starts Ollama on this PC, or None if it is not installed."""
+    tray_app = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama app.exe"
+    if os.name == "nt" and tray_app.is_file():
+        return [str(tray_app)]                 # the normal Windows install (tray icon + server)
+    cli = shutil.which("ollama")
+    return [cli, "serve"] if cli else None
+
+
+def start_ollama(settings: dict[str, Any], wait_seconds: float = 30, launch=None) -> bool:
+    """Make sure Ollama is running. Returns True when it answers.
+
+    Only starts Ollama on THIS computer: if the AI check points at another address,
+    Warden never tries to start anything. `launch` lets tests replace the real start.
+    """
+    url = settings.get("url", DEFAULTS["url"])
+    if ollama_is_up(url):
+        return True
+    if urllib.parse.urlparse(url).hostname not in LOCAL_HOSTS:
+        return False
+    command = find_ollama() if launch is None else ["fake-ollama"]
+    if command is None:
+        log.warning("Ollama is not installed, so the AI check cannot run")
+        return False
+    log.info("Ollama is not running - starting it")
+    try:
+        if launch is not None:
+            launch(command)
+        else:
+            flags = (subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS) if os.name == "nt" else 0
+            subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, creationflags=flags, close_fds=True)
+    except OSError as exc:
+        log.warning("Could not start Ollama: %s", exc)
+        return False
+    deadline = time.monotonic() + wait_seconds
+    while time.monotonic() < deadline:     # it takes a few seconds to be ready
+        if ollama_is_up(url):
+            return True
+        time.sleep(1)
+    return False
 
 
 class IntentChecker:
