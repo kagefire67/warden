@@ -348,6 +348,12 @@ def main() -> None:
     server = ApprovalServer(decide)
     server.start()
 
+    # Files from an older Warden may still hold readable keys: lock them now.
+    try:
+        warden_protect.lock_existing()
+    except Exception:
+        pass        # never stop the app from opening; the files stay as they were
+
     # If the AI check is on, start Ollama in the background so it is ready when needed.
     ai_settings = load_config().get("intent_check") or {}
     if ai_settings.get("enabled") and ai_settings.get("backend", "ollama") == "ollama":

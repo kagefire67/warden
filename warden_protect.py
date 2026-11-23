@@ -12,6 +12,9 @@ Warden one-click Protect (Stage 9)
   4. RECORD   - remembers what was moved, so "Unprotect" can put it all back.
 
 Safety rules:
+  - Keys are LOCKED: every "env" value Warden saves (servers.json, protected.json and the
+    backups) is encrypted with Windows DPAPI (see warden_secrets.py). Unprotect unlocks
+    them again, because the AI app needs the real values back.
   - A config that cannot be read (broken JSON, comments) is NEVER touched.
   - Files are written atomically (temp file + rename) and re-checked after writing.
   - Online (http/sse) servers cannot be moved behind Warden yet; they are left
@@ -24,13 +27,14 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from glob import glob
 from pathlib import Path
 from typing import Any
+
+from warden_secrets import SecretError, has_plain_keys, lock_servers, lock_spec, unlock_spec
 
 WARDEN_DIR = Path(__file__).resolve().parent
 
@@ -131,13 +135,35 @@ def write_json(path: Path, data: Any) -> None:
     os.replace(tmp, path)
 
 
-def backup(path: Path, backup_dir: Path, key: str) -> str | None:
-    if not path.exists():
+def backup(target: Target, data: dict[str, Any], backup_dir: Path) -> str | None:
+    """Save a copy of the app's config before changing it - with its keys LOCKED,
+    so the backup folder never holds readable keys."""
+    if not target.config.exists():
         return None
     backup_dir.mkdir(parents=True, exist_ok=True)
-    dest = backup_dir / f"{key}-{datetime.now():%Y%m%d-%H%M%S-%f}.json"
-    shutil.copy2(path, dest)
+    dest = backup_dir / f"{target.key}-{datetime.now():%Y%m%d-%H%M%S-%f}.json"
+    safe = {**data, target.servers_key: lock_servers(data.get(target.servers_key))}
+    write_json(dest, safe)
     return str(dest)
+
+
+def lock_existing(home: Path | None = None, servers_file: Path | None = None) -> bool:
+    """Lock keys in files written by an older Warden (plain text). True if anything changed.
+    The Warden App calls this when it starts."""
+    home = home or warden_home()
+    servers_file = servers_file or default_servers_file()
+    records_file = home / "protected.json"
+    changed = False
+    private = read_json(servers_file, None)
+    if isinstance(private, dict) and has_plain_keys(private.get("servers")):
+        write_json(servers_file, {**private, "servers": lock_servers(private["servers"])})
+        changed = True
+    records = read_json(records_file, None)
+    if isinstance(records, dict) and any(has_plain_keys(r.get("originals")) for r in records.values() if isinstance(r, dict)):
+        write_json(records_file, {k: ({**r, "originals": lock_servers(r.get("originals"))} if isinstance(r, dict) else r)
+                                  for k, r in records.items()})
+        changed = True
+    return changed
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +194,7 @@ def protect(target: Target, home: Path | None = None, servers_file: Path | None 
     records = read_json(records_file, {})
 
     servers = data.get(target.servers_key) or {}
-    result = Result(backup=backup(target.config, home / "backups", target.key))
+    result = Result(backup=backup(target, data, home / "backups"))
     record = records.get(str(target.config), {"app": target.name, "originals": {}, "moved": {}})
 
     keep: dict[str, Any] = {}
@@ -181,10 +207,10 @@ def protect(target: Target, home: Path | None = None, servers_file: Path | None 
             continue
         # Pick a name in Warden's file: no "__" (Warden's separator), no clash with other apps' servers.
         new_name = name.replace("__", "_")
-        if new_name in private["servers"] and private["servers"][new_name] != _stdio_only(spec):
+        if new_name in private["servers"] and not _same_server(private["servers"][new_name], spec):
             new_name = f"{target.key}_{new_name}"
-        private["servers"][new_name] = _stdio_only(spec)
-        record["originals"][name] = spec
+        private["servers"][new_name] = lock_spec(_stdio_only(spec))     # keys locked on disk
+        record["originals"][name] = lock_spec(spec)
         record["moved"][name] = new_name
         result.moved.append(name)
 
@@ -211,9 +237,15 @@ def unprotect(target: Target, home: Path | None = None, servers_file: Path | Non
     records = read_json(records_file, {})
     record = records.pop(str(target.config), {"originals": {}, "moved": {}})
 
-    result = Result(backup=backup(target.config, home / "backups", target.key))
+    # Unlock the keys first: the app needs the real values. If that fails, change nothing.
+    try:
+        originals = {name: unlock_spec(spec) for name, spec in record["originals"].items()}
+    except SecretError as exc:
+        raise ProtectError(f"Warden could not unlock the saved keys ({exc}), so nothing was changed.")
+
+    result = Result(backup=backup(target, data, home / "backups"))
     servers = {n: s for n, s in (data.get(target.servers_key) or {}).items() if not is_warden(s)}
-    for name, spec in record["originals"].items():
+    for name, spec in originals.items():
         servers.setdefault(name, spec)                 # never overwrite something the user added since
         private["servers"].pop(record["moved"].get(name, ""), None)
         result.moved.append(name)
@@ -223,6 +255,15 @@ def unprotect(target: Target, home: Path | None = None, servers_file: Path | Non
     write_json(servers_file, private)
     write_json(records_file, records)
     return result
+
+
+def _same_server(saved: Any, spec: dict[str, Any]) -> bool | None:
+    """Is a server already in Warden's file the same as this one? (None = cannot tell)
+    Locked keys look different every time, so compare the unlocked values."""
+    try:
+        return unlock_spec(saved) == _stdio_only(spec)
+    except SecretError:
+        return None
 
 
 def _stdio_only(spec: dict[str, Any]) -> dict[str, Any]:

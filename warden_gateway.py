@@ -56,6 +56,7 @@ from warden_protect import default_servers_file
 from warden_intent import Activity, IntentChecker, IntentResult
 from warden_policy import STRICTNESS, Decision, Policy
 from warden_scanner import Finding, Scanner, serious, strip_hidden
+from warden_secrets import SecretError, contains_secret, redact, secret_values, unlock_spec
 import warden_story
 from warden_story import Story
 
@@ -199,6 +200,23 @@ def scan_result(scanner: Scanner, result: types.CallToolResult) -> tuple[types.C
     return cleaned, unique(findings)
 
 
+def hide_secrets(result: types.CallToolResult, secrets: list[str]) -> types.CallToolResult:
+    """Replace any of the user's saved keys in a tool result with "[hidden key]",
+    so the AI never gets to see (and so never gets tricked into sending) them."""
+    if not secrets:
+        return result
+    content: list[Any] = []
+    for block in result.content:
+        if isinstance(block, types.TextContent):
+            block = block.model_copy(update={"text": redact(block.text, secrets)})
+        elif isinstance(block, types.EmbeddedResource) and isinstance(block.resource, types.TextResourceContents):
+            block = block.model_copy(update={"resource": block.resource.model_copy(
+                update={"text": redact(block.resource.text, secrets)})})
+        content.append(block)
+    return result.model_copy(update={"content": content,
+                                     "structured_content": redact(result.structured_content, secrets)})
+
+
 def warning_block(findings: list[Finding], story: Story | None = None) -> types.TextContent:
     """A short warning placed before the tool's output, so the AI treats it as data."""
     if story is not None:
@@ -295,7 +313,10 @@ def add_private_servers(config: dict[str, Any]) -> None:
         if name in config["servers"]:
             log.warning("Protected server %r has the same name as one in warden_config.json - skipped", name)
             continue
-        config["servers"][name] = spec
+        try:
+            config["servers"][name] = unlock_spec(spec)      # keys unlocked in memory only
+        except SecretError as exc:                          # the message never contains the key
+            log.error("Could not unlock the keys of protected server %r (%s) - its tools are unavailable", name, exc)
 
 
 def load_policy(config: dict[str, Any], config_path: Path) -> Policy | None:
@@ -411,8 +432,10 @@ def build_server(
     session: Session | None = None,
     language: str = "en",
     approvals: dict[str, Any] | None = None,
+    secrets: list[str] | None = None,
 ) -> Server:
     session = session or Session()
+    secrets = secrets or []          # the user's tool keys: never let them leave, never log them
     approvals = {"enabled": True, "timeout_seconds": 60, **(approvals or {})}
     app_file = Path(approvals["app_file"]) if approvals.get("app_file") else None
 
@@ -420,7 +443,11 @@ def build_server(
         return types.ListToolsResult(tools=exposed)
 
     async def on_call_tool(ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
-        arguments = dict(params.arguments or {})
+        real_arguments = dict(params.arguments or {})
+        # Does the action contain one of the user's saved keys? Then it is blocked (below),
+        # and from here on only the cleaned copy is logged, shown or sent to the AI check.
+        leaks_key = contains_secret(real_arguments, secrets)
+        arguments = redact(real_arguments, secrets) if leaks_key else real_arguments
         entry = new_entry(tool=params.name, arguments=arguments)
 
         route = routes.get(params.name)
@@ -432,7 +459,11 @@ def build_server(
         entry.update(server=route.server, tool=route.tool, tainted_session=session.tainted)
 
         # --- Step 1: check the action BEFORE it happens -------------------
-        decision = check_action(policy, params.name, arguments, session)
+        if leaks_key:
+            decision = Decision("block", "This action contains one of your saved tool keys (a password for your "
+                                         "tools). Warden never lets those leave.", ["secret-leak"])
+        else:
+            decision = check_action(policy, params.name, arguments, session)
 
         # --- Step 1b: AI intent check, only for risky actions the rules did not block
         if checker and checker.enabled and decision.action != "block" and checker.applies_to(params.name):
@@ -481,12 +512,14 @@ def build_server(
         # --- Step 2: forward to the real tool ----------------------------
         started = time.perf_counter()
         try:
-            result = await route.client.call_tool(route.tool, arguments)
+            result = await route.client.call_tool(route.tool, real_arguments)
         except Exception as exc:
-            entry.update(status="error", error=str(exc), duration_ms=round((time.perf_counter() - started) * 1000))
+            error = redact(str(exc), secrets)
+            entry.update(status="error", error=error, duration_ms=round((time.perf_counter() - started) * 1000))
             action_log.write(entry)
-            return text_result(f"Warden: the '{route.server}' server failed: {exc}", is_error=True)
+            return text_result(f"Warden: the '{route.server}' server failed: {error}", is_error=True)
         entry["duration_ms"] = round((time.perf_counter() - started) * 1000)
+        result = hide_secrets(result, secrets)          # the AI never sees the user's keys
 
         # --- Step 3: scan what came back, BEFORE the AI reads it ---------
         try:
@@ -540,7 +573,7 @@ def build_server(
 
     return Server(
         "warden",
-        version="0.6.0",
+        version="0.7.0",
         instructions="Warden checks and logs every tool call before it reaches the real tool.",
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,
@@ -575,7 +608,7 @@ async def main() -> None:
         if not routes:
             log.error("No tool servers could be started - check warden_config.json")
         server = build_server(exposed, routes, action_log, policy, scanner, checker, language=language,
-                              approvals=config.get("approvals"))
+                              approvals=config.get("approvals"), secrets=secret_values(config["servers"]))
         if checker.enabled:
             # Load the AI model in the background, so the first real check is fast.
             warm_up = asyncio.create_task(checker.warm_up())  # noqa: F841 (keep a reference)

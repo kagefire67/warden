@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 import warden_protect as wp  # noqa: E402
 from warden_gateway import add_private_servers  # noqa: E402
+from warden_secrets import lock_spec, unlock_spec  # noqa: E402
 
 FAKE_TOOL = {"command": sys.executable, "args": [str(ROOT / "tests" / "fake_tools_server.py")]}
 
@@ -53,14 +54,38 @@ def test_protect_moves_local_tools_and_keeps_everything_else():
     assert set(config["mcpServers"]) == {"online", "warden"}, config["mcpServers"]
     assert config["preferences"] == CLAUDE_CONFIG["preferences"], "other app settings must not change"
     assert wp.is_warden(config["mcpServers"]["warden"])
-    assert load(servers)["servers"]["github"]["env"] == {"GITHUB_TOKEN": "fake-token-123"}
+    assert unlock_spec(load(servers)["servers"]["github"])["env"] == {"GITHUB_TOKEN": "fake-token-123"}
     assert wp.status(target) == ("protected", ["online"])
 
 
 def test_protect_makes_a_backup_of_the_original():
     target, home, servers = sandbox(CLAUDE_CONFIG)
     result = wp.protect(target, home, servers)
-    assert result.backup and load(Path(result.backup)) == CLAUDE_CONFIG
+    saved = load(Path(result.backup))
+    saved["mcpServers"] = {n: unlock_spec(s) for n, s in saved["mcpServers"].items()}
+    assert result.backup and saved == CLAUDE_CONFIG
+
+
+def test_keys_are_never_readable_on_disk():
+    target, home, servers = sandbox(CLAUDE_CONFIG)
+    result = wp.protect(target, home, servers)
+    for path in (servers, home / "protected.json", Path(result.backup)):
+        text = path.read_text(encoding="utf-8")
+        assert "fake-token-123" not in text, f"{path.name} holds a readable key"
+        assert "warden-dpapi:" in text, f"{path.name} should hold the locked key"
+
+
+def test_older_plain_files_get_locked():
+    _, home, servers = sandbox(None)
+    servers.parent.mkdir(parents=True)
+    servers.write_text(json.dumps({"servers": {"gh": {"command": "x", "env": {"TOKEN": "plain-secret-999"}}}}))
+    (home / "protected.json").write_text(json.dumps(
+        {"app.json": {"originals": {"gh": {"command": "x", "env": {"TOKEN": "plain-secret-999"}}}, "moved": {}}}))
+    assert wp.lock_existing(home, servers)
+    for path in (servers, home / "protected.json"):
+        assert "plain-secret-999" not in path.read_text(encoding="utf-8")
+    assert unlock_spec(load(servers)["servers"]["gh"])["env"]["TOKEN"] == "plain-secret-999"
+    assert not wp.lock_existing(home, servers), "nothing left to lock the second time"
 
 
 def test_unprotect_puts_everything_back():
@@ -166,6 +191,35 @@ def test_moved_tool_really_runs_behind_warden():
             result = await client.call_tool("moved__read_file", {"path": ".env"})
             assert result.is_error, "a moved tool is checked by Warden's rules like any other"
     asyncio.run(run())
+
+
+def test_saved_keys_never_reach_the_ai_or_leave():
+    """End to end: a moved tool with a LOCKED key. Warden unlocks it only for the tool,
+    hides it from the AI, blocks any action that carries it, and never logs it."""
+    from mcp import Client, StdioServerParameters
+    key = "sk-test-ABC123def456ghi789"                    # a fake key
+    root = Path(tempfile.mkdtemp())
+    servers = root / "servers.json"
+    servers.write_text(json.dumps({"servers": {"moved": lock_spec({**FAKE_TOOL, "env": {"FAKE_API_TOKEN": key}})}}))
+    config = root / "config.json"
+    config.write_text(json.dumps({"servers": {}, "extra_servers_file": str(servers),
+                                  "approvals": {"enabled": False}}))
+    log = root / "log.jsonl"
+    params = StdioServerParameters(command=sys.executable, args=[str(ROOT / "warden_gateway.py"), "--config", str(config),
+                                                                 "--log", str(log)])
+
+    async def run():
+        async with Client(params) as client:
+            shown = await client.call_tool("moved__read_file", {"path": "settings.txt"})
+            text = shown.content[0].text
+            assert "[hidden key]" in text and key not in text, f"the tool got the key, the AI must not: {text}"
+            sent = await client.call_tool("moved__write_file", {"path": "notes.txt", "content": f"my key is {key}"})
+            assert sent.is_error and "saved tool keys" in sent.content[0].text, sent.content[0].text
+            assert key not in sent.content[0].text
+    asyncio.run(run())
+    entries = log.read_text(encoding="utf-8")
+    assert key not in entries, "a key ended up in the log"
+    assert '"secret-leak"' in entries
 
 
 def run_all() -> int:

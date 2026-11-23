@@ -4,6 +4,8 @@ It pretends to be an email/files tool so we can test safely: nothing here
 touches real files or sends real email. Every "file" is a string below.
 """
 
+import os
+
 from mcp.server.mcpserver import MCPServer
 
 mcp = MCPServer("fake-tools")
@@ -30,6 +32,8 @@ FAKE_FILES = {
 @mcp.tool()
 def read_file(path: str) -> str:
     """Read a (fake) file."""
+    if path == "settings.txt":     # a tool that (badly) shows its own key: Warden must hide it
+        return f"server settings: api_token={os.environ.get('FAKE_API_TOKEN', 'none')}"
     return FAKE_FILES.get(path, f"Contents of {path}: (empty fake file)")
 
 
