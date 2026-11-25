@@ -4,3 +4,4 @@ logs/
 .env
 .claude/
 CLAUDE.md
+PROJECT_SUMMARY.md
