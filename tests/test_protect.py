@@ -180,7 +180,7 @@ def test_moved_tool_really_runs_behind_warden():
     servers.write_text(json.dumps({"servers": {"moved": FAKE_TOOL}}))
     config = root / "config.json"
     config.write_text(json.dumps({"servers": {}, "extra_servers_file": str(servers),
-                                  "approvals": {"enabled": False}}))
+                                  "approvals": {"enabled": False}, "tool_memory_file": None}))
     params = StdioServerParameters(command=sys.executable, args=[str(ROOT / "warden_gateway.py"), "--config", str(config),
                                                                  "--log", str(root / "log.jsonl")])
 
@@ -222,7 +222,7 @@ def test_saved_keys_never_reach_the_ai_or_leave():
     servers.write_text(json.dumps({"servers": {"moved": lock_spec({**FAKE_TOOL, "env": {"FAKE_API_TOKEN": key}})}}))
     config = root / "config.json"
     config.write_text(json.dumps({"servers": {}, "extra_servers_file": str(servers),
-                                  "approvals": {"enabled": False}}))
+                                  "approvals": {"enabled": False}, "tool_memory_file": None}))
     log = root / "log.jsonl"
     params = StdioServerParameters(command=sys.executable, args=[str(ROOT / "warden_gateway.py"), "--config", str(config),
                                                                  "--log", str(log)])

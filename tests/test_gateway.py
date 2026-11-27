@@ -39,6 +39,8 @@ def warden_params(tmp_path: Path, extra_config: dict | None = None) -> tuple[Std
         "approvals": {"enabled": True, "timeout_seconds": 5, "app_file": str(tmp_path / "no_app.json")},
         # ...and never load the user's real protected servers either.
         "extra_servers_file": None,
+        # ...or touch the user's real tool memory (rug-pull detection).
+        "tool_memory_file": str(tmp_path / "tool_memory.json"),
     }
     config.update(extra_config or {})
     config_path.write_text(json.dumps(config))
@@ -263,6 +265,59 @@ async def approval_session(tmp_path: Path) -> None:
     print("PASS  approvals: Allow and Deny are written to the log")
 
 
+async def rug_pull_session(tmp_path: Path) -> None:
+    """Rug pull: a tool that changes its description after the first start is hidden and logged."""
+    from warden_approval import ApprovalServer
+    from warden_toolmemory import accept_change, pending_changes
+
+    notices = []
+    app = ApprovalServer(lambda req: "deny", app_file=tmp_path / "app.json", notify=notices.append)
+    app.start()
+    approvals = {"approvals": {"enabled": True, "timeout_seconds": 5, "app_file": str(tmp_path / "app.json")}}
+    memory = tmp_path / "tool_memory.json"
+    try:
+        params, log_path = warden_params(tmp_path, approvals)
+        async with Client(params) as client:              # day 1: honest tool, remembered
+            assert "fake__read_file" in [t.name for t in (await client.list_tools()).tools]
+
+        params, log_path = warden_params(tmp_path, {**approvals, "servers": {"fake": {
+            "command": sys.executable, "args": [FAKE_SERVER], "env": {"FAKE_RUG_PULL": "1"}}}})
+        async with Client(params) as client:              # later: same tool, changed description
+            names = [t.name for t in (await client.list_tools()).tools]
+            assert "fake__read_file" not in names and "fake__send_email" in names, names
+            for _ in range(50):
+                if notices:
+                    break
+                await asyncio.sleep(0.1)
+        print("PASS  rug pull: a tool that changed its description is hidden from the AI")
+
+        assert notices and notices[0]["kind"] == "changed" and "read_file" in notices[0]["title"], notices
+        print("PASS  rug pull: the user gets a notice")
+
+        entries = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+        changed = [e for e in entries if e.get("event") == "tool_changed"]
+        assert changed and changed[0]["tool"] == "read_file" and "rug-pull" in changed[0]["rules"], changed
+        pending = pending_changes(memory)
+        assert [p["key"] for p in pending] == ["fake/read_file"] and "traceability" in pending[0]["new"]
+        print("PASS  rug pull: logged, and the new description is kept for the user to review")
+
+        assert accept_change("fake/read_file", memory)     # the user trusts the new version
+        async with Client(params) as client:
+            assert "fake__read_file" in [t.name for t in (await client.list_tools()).tools]
+        print("PASS  rug pull: after the user trusts the change, the tool is back")
+    finally:
+        app.stop()
+
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    params, _ = warden_params(broken, {"tool_memory_file": str(broken / "mem.json")})
+    (broken / "mem.json").write_text("{ broken")
+    async with Client(params) as client:
+        assert (await client.list_tools()).tools == [], "a broken tool memory must hide the tools (fail safe)"
+    assert (broken / "mem.json").read_text() == "{ broken", "and must not be overwritten"
+    print("PASS  rug pull: a broken tool memory hides every tool (fail safe)")
+
+
 async def run_test() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         await main_session(Path(tmp))
@@ -274,6 +329,8 @@ async def run_test() -> None:
         await quoted_phrase_session(Path(tmp))
     with tempfile.TemporaryDirectory() as tmp:
         await approval_session(Path(tmp))
+    with tempfile.TemporaryDirectory() as tmp:
+        await rug_pull_session(Path(tmp))
     print("\nAll tests passed.")
 
 

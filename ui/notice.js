@@ -4,16 +4,18 @@
 
 "use strict";
 
-const KIND_LABEL = { attack: "Attack found - your AI was warned", blocked: "Action stopped" };
+const KIND_LABEL = { attack: "Attack found - your AI was warned", blocked: "Action stopped",
+                     changed: "A tool changed - hidden until you check it" };
 
 async function start(api) {
   const notice = await api.get_notice();
-  document.getElementById("notice").classList.add(notice.kind === "attack" ? "is-attack" : "is-blocked");
+  document.getElementById("notice").classList.add(notice.kind === "blocked" ? "is-blocked" : "is-attack");
   document.getElementById("kind").textContent = KIND_LABEL[notice.kind] || KIND_LABEL.blocked;
   document.getElementById("title").textContent = notice.title || "Warden stopped an action";
   document.getElementById("story").textContent = notice.story || "";
-  document.getElementById("source").textContent =
-    "Tool: " + notice.server + "/" + notice.tool + "  ·  Full story in Warden's History tab";
+  document.getElementById("source").textContent = notice.kind === "changed"
+    ? "Tool server: " + notice.server + "  ·  Review it on the Warden App's Home tab"
+    : "Tool: " + notice.server + "/" + notice.tool + "  ·  Full story in Warden's History tab";
   document.getElementById("close").addEventListener("click", () => api.close());
   document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") api.close(); });
 }

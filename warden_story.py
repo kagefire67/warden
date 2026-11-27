@@ -70,6 +70,12 @@ TEXT: dict[str, dict[str, str]] = {
         "tool_title": "Dangerous tool hidden: {tool}",
         "tool_body": "The tool '{tool}' from '{server}' has instructions for the AI hidden in its description ({intents}). "
                      "Warden hid this tool so the AI cannot use it.",
+        "changed_title": "Tool changed its instructions: {tool}",
+        "changed_body": "The tool '{tool}' from '{server}' changed its description since Warden last saw it. "
+                        "A tool can be honest at first and later add hidden orders for the AI (a 'rug pull'), "
+                        "so Warden hid it. If you expected this (for example after an update), "
+                        "trust the new version in the Warden App, then restart your AI app.",
+        "changed_now": " Its description now starts: \"{line}\".",
         "and": " and ",
         "comma": ", ",
         # actions
@@ -110,6 +116,12 @@ TEXT: dict[str, dict[str, str]] = {
         "tool_title": "تم إخفاء أداة خطرة: {tool}",
         "tool_body": "الأداة '{tool}' من '{server}' تحتوي في وصفها على تعليمات مخفية للذكاء الاصطناعي ({intents}). "
                      "أخفى Warden هذه الأداة حتى لا يستطيع الذكاء الاصطناعي استخدامها.",
+        "changed_title": "أداة غيّرت تعليماتها: {tool}",
+        "changed_body": "الأداة '{tool}' من '{server}' غيّرت وصفها منذ آخر مرة رآها Warden. "
+                        "قد تكون الأداة صادقة في البداية ثم تضيف لاحقًا أوامر مخفية للذكاء الاصطناعي، "
+                        "لذلك أخفاها Warden. إذا كنت تتوقع هذا (مثلًا بعد تحديث)، "
+                        "اعتمد النسخة الجديدة في تطبيق Warden، ثم أعد تشغيل تطبيق الذكاء الاصطناعي.",
+        "changed_now": " يبدأ وصفها الآن بـ: \"{line}\".",
         "and": " و",
         "comma": "، ",
         "send": "إرسال بريد إلكتروني إلى {to}", "attachment": " مع المرفق {attachment}",
@@ -330,3 +342,13 @@ def tool_poisoned(server: str, tool: str, findings: list[dict[str, Any]], langua
     t = TEXT[lang]
     body = t["tool_body"].format(tool=tool, server=server, intents=describe_intents(findings, lang))
     return Story(t["tool_title"].format(tool=tool), body + evidence(findings, lang), body)
+
+
+def tool_changed(server: str, tool: str, new_description: str, language: str = "en") -> Story:
+    """A tool's description changed since Warden last saw it (possible 'rug pull').
+    The user's text shows the start of the NEW description; the AI never sees this story's quote."""
+    lang = _lang(language)
+    t = TEXT[lang]
+    body = t["changed_body"].format(tool=tool, server=server)
+    line = _short(" ".join((new_description or "").split()), 160)
+    return Story(t["changed_title"].format(tool=tool), body + (t["changed_now"].format(line=line) if line else ""), body)

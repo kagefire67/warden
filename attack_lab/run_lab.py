@@ -49,31 +49,48 @@ def ai_settings() -> dict:
 # ---------------------------------------------------------------------------
 
 async def run_scenario(s: dict, intent_check: dict | None = None) -> dict:
-    if s.get("special") == "not_implemented":
-        return {"outcome": "NOT BUILT", "got": "-", "note": "Rug-pull detection is not built yet."}
+    rug_pull = s.get("special") == "rug_pull"
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         config = tmp_path / "config.json"
         log = tmp_path / "actions.jsonl"
-        config.write_text(json.dumps({
-            "rules_file": str(ROOT / "rules.json"),
-            "intent_check": intent_check or {"enabled": False},
-            "approvals": {"enabled": False},   # the lab measures Warden alone: no popups
-            "extra_servers_file": None,        # ...and only the lab's fake tools
-            "servers": {"lab": {"command": sys.executable, "args": [str(LAB / "lab_server.py")]}},
-        }))
-        params = StdioServerParameters(
-            command=sys.executable,
-            args=[str(ROOT / "warden_gateway.py"), "--config", str(config), "--log", str(log)],
-        )
 
-        async with Client(params) as client:
-            tool_names = {t.name for t in (await client.list_tools()).tools}
-            for st in s["steps"]:
-                await client.call_tool(f"lab__{st['tool']}", st["args"])
+        async def run_warden(server_env: dict | None = None) -> set[str]:
+            config.write_text(json.dumps({
+                "rules_file": str(ROOT / "rules.json"),
+                "intent_check": intent_check or {"enabled": False},
+                "approvals": {"enabled": False},   # the lab measures Warden alone: no popups
+                "extra_servers_file": None,        # ...and only the lab's fake tools
+                # Tool memory only for the rug-pull scenario, in this scenario's own temp folder.
+                "tool_memory_file": str(tmp_path / "tool_memory.json") if rug_pull else None,
+                "servers": {"lab": {"command": sys.executable, "args": [str(LAB / "lab_server.py")],
+                                    **({"env": server_env} if server_env else {})}},
+            }))
+            params = StdioServerParameters(
+                command=sys.executable,
+                args=[str(ROOT / "warden_gateway.py"), "--config", str(config), "--log", str(log)],
+            )
+            async with Client(params) as client:
+                names = {t.name for t in (await client.list_tools()).tools}
+                for st in s["steps"]:
+                    await client.call_tool(f"lab__{st['tool']}", st["args"])
+            return names
+
+        if rug_pull:
+            await run_warden()                                    # day 1: the tool is honest
+            tool_names = await run_warden({"LAB_RUG_PULL": "1"})  # later: same tool, new description
+        else:
+            tool_names = await run_warden()
 
         entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
+
+    if rug_pull:
+        changed = [e for e in entries if e.get("event") == "tool_changed" and e.get("tool") == "post_comment"]
+        hidden = "lab__post_comment" not in tool_names
+        note = (changed[0].get("story") or changed[0]["reason"]) if changed else ""
+        return {"outcome": "PASS" if hidden and changed else "MISS",
+                "got": "tool hidden" if hidden else "tool shown", "note": note}
 
     if s.get("special") == "poisoned_tool":
         flagged = [e for e in entries if e.get("event") == "tool_flagged" and e.get("tool") == "sync_backup"]
@@ -82,7 +99,7 @@ async def run_scenario(s: dict, intent_check: dict | None = None) -> dict:
         note = (flagged[0].get("story") or flagged[0]["findings"][0]["detail"]) if flagged else ""
         return {"outcome": "PASS" if ok else "MISS", "got": "tool hidden" if hidden else "tool shown", "note": note}
 
-    calls = [e for e in entries if e.get("event") != "tool_flagged"]
+    calls = [e for e in entries if e.get("event") not in ("tool_flagged", "tool_changed")]
     return score(s, calls)
 
 

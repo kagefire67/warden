@@ -59,6 +59,24 @@ async function refreshStatus() {
     checks.append(row);
   }
 
+  // Tools that changed their description (rug pull): show old vs new, let the user trust it.
+  const changed = $("changed");
+  changed.replaceChildren();
+  $("changed-card").hidden = !(s.changed_tools && s.changed_tools.length);
+  for (const c of s.changed_tools || []) {
+    const row = el("div", "row");
+    const main = el("div", "row-main");
+    main.append(el("div", "row-title", c.server + " / " + c.tool));
+    const details = el("details");
+    details.append(el("summary", null, "What changed"));
+    details.append(el("div", "details", "BEFORE:\n" + (c.old || "(empty)") + "\n\nNOW:\n" + (c.new || "(empty)")));
+    main.append(details);
+    const button = el("button", "btn", "Trust new version");
+    button.addEventListener("click", () => confirmTrust(c));
+    row.append(main, el("span", "pill bad", "HIDDEN"), button);
+    changed.append(row);
+  }
+
   const apps = $("apps");
   apps.replaceChildren();
   if (!s.apps.length) apps.append(el("div", "muted", "No supported AI app found on this PC."));
@@ -98,6 +116,24 @@ function confirmProtection(app) {
   $("modal-ok").className = "btn " + (protecting ? "primary" : "danger");
   pendingConfirm = async () => {
     const result = await api.toggle_protection(app.id);
+    showResult(result);
+    refreshStatus();
+  };
+  $("modal").hidden = false;
+  $("modal-cancel").focus();
+}
+
+function confirmTrust(change) {
+  $("modal-title").textContent = "Trust the new " + change.tool + "?";
+  const body = $("modal-body");
+  body.replaceChildren();
+  body.append(el("p", "flush", "Only do this if you expected " + change.server + " to change, for example after an update. " +
+                               "If you are not sure, keep it hidden."));
+  body.append(el("div", "details", change.new || "(empty)"));
+  $("modal-ok").textContent = "Trust it";
+  $("modal-ok").className = "btn danger";
+  pendingConfirm = async () => {
+    const result = await api.trust_tool(change.key);
     showResult(result);
     refreshStatus();
   };

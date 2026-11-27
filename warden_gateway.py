@@ -57,6 +57,7 @@ from warden_intent import Activity, IntentChecker, IntentResult
 from warden_policy import STRICTNESS, Decision, Policy
 from warden_scanner import Finding, Scanner, serious, strip_hidden
 from warden_secrets import SecretError, contains_secret, redact, secret_values, unlock_spec
+from warden_toolmemory import check_tools, default_memory_file
 import warden_story
 from warden_story import Story
 
@@ -358,12 +359,36 @@ def scan_tool(scanner: Scanner, tool: types.Tool) -> list[Finding]:
     return unique(findings)
 
 
+def memory_file_of(config: dict[str, Any]) -> Path | None:
+    """Where tool fingerprints are remembered. "tool_memory_file": null switches it off (the lab's
+    normal scenarios do); missing = the private file in %LOCALAPPDATA%\\Warden."""
+    if "tool_memory_file" in config:
+        return Path(config["tool_memory_file"]) if config["tool_memory_file"] else None
+    return default_memory_file()
+
+
+def changed_tools(memory_file: Path | None, server_name: str, tools: list[types.Tool]) -> tuple[set[str], str | None]:
+    """Rug-pull check for one server: which tools changed since Warden last saw them.
+    Fail safe: if the memory cannot be read or saved, every tool counts as changed."""
+    if memory_file is None:
+        return set(), None
+    try:
+        return set(check_tools(memory_file, server_name, tools)), None
+    except Exception as exc:
+        log.error("Tool memory %s is unusable (%s) - hiding all tools of %r until it is fixed or deleted",
+                  memory_file, exc, server_name)
+        return {t.name for t in tools}, f"Warden's tool memory could not be used ({type(exc).__name__})"
+
+
 async def connect_servers(
-    config: dict[str, Any], stack: AsyncExitStack, scanner: Scanner, action_log: ActionLog, language: str = "en"
+    config: dict[str, Any], stack: AsyncExitStack, scanner: Scanner, action_log: ActionLog, language: str = "en",
+    notices: list[dict[str, Any]] | None = None,
 ) -> tuple[list[types.Tool], dict[str, Route]]:
-    """Start every configured server and build the combined tool list."""
+    """Start every configured server and build the combined tool list.
+    Tools that changed since last time (rug pull) are hidden; a notice for the user is added to `notices`."""
     exposed: list[types.Tool] = []
     routes: dict[str, Route] = {}
+    memory_file = memory_file_of(config)
 
     for server_name, spec in config["servers"].items():
         if NAME_SEPARATOR in server_name:
@@ -382,8 +407,26 @@ async def connect_servers(
             continue
 
         hidden_count = 0
+        changed, memory_problem = changed_tools(memory_file, server_name, tools)
+        changed_stories: list[Story] = []
         for tool in tools:
             public_name = f"{server_name}{NAME_SEPARATOR}{tool.name}"
+
+            # Rug pull: the tool's description changed since Warden last saw it -> hide it.
+            if tool.name in changed:
+                hidden_count += 1
+                log.warning("Tool %r changed its description since Warden last saw it - hidden", public_name)
+                story = make_story(warden_story.tool_changed, server_name, tool.name, tool.description or "", language)
+                if story:
+                    changed_stories.append(story)
+                action_log.write(new_entry(
+                    event="tool_changed", server=server_name, tool=tool.name, arguments={},
+                    decision="block", status="blocked", rules=["rug-pull"],
+                    reason=memory_problem or "This tool changed its description since Warden last saw it, "
+                                             "so Warden hid it until you trust the new version.",
+                    **({"story": story.text, "story_title": story.title} if story else {}),
+                ))
+                continue
 
             # Fail safe: if the scan itself crashes, treat the tool as poisoned.
             try:
@@ -413,7 +456,15 @@ async def connect_servers(
             exposed.append(tool.model_copy(update={"name": public_name, "description": description, "output_schema": None}))
             routes[public_name] = Route(server=server_name, tool=tool.name, client=client)
 
-        log.info("Protecting server %r (%d tools, %d hidden as poisoned)", server_name, len(tools) - hidden_count, hidden_count)
+        log.info("Protecting server %r (%d tools, %d hidden)", server_name, len(tools) - hidden_count, hidden_count)
+        if changed_stories and notices is not None:      # one notice per server, not one per tool
+            first = changed_stories[0]
+            more = len(changed_stories) - 1
+            notices.append({"kind": "changed", "server": server_name, "tool": "",
+                            "title": first.title if not more else f"{len(changed_stories)} tools from "
+                                                                  f"'{server_name}' changed their instructions",
+                            "story": first.text + (f" ({more} more tools from '{server_name}' changed too.)"
+                                                   if more else "")})
 
     return exposed, routes
 
@@ -433,6 +484,7 @@ def build_server(
     language: str = "en",
     approvals: dict[str, Any] | None = None,
     secrets: list[str] | None = None,
+    startup_notices: list[dict[str, Any]] | None = None,
 ) -> Server:
     session = session or Session()
     secrets = secrets or []          # the user's tool keys: never let them leave, never log them
@@ -451,10 +503,12 @@ def build_server(
 
     def notify_user(kind: str, story: Story | None, fallback: str, server: str, tool: str) -> None:
         """Send a notice to the Warden App in the background. The tool call never waits for it."""
+        send_notice({"kind": kind, "title": story.title if story else fallback,
+                     "story": story.text if story else fallback, "server": server, "tool": tool})
+
+    def send_notice(notice: dict[str, Any]) -> None:
         if not notices_on:
             return
-        notice = {"kind": kind, "title": story.title if story else fallback,
-                  "story": story.text if story else fallback, "server": server, "tool": tool}
 
         async def send() -> None:
             try:
@@ -466,6 +520,9 @@ def build_server(
         task = asyncio.create_task(send())
         sending.add(task)
         task.add_done_callback(sending.discard)
+
+    for notice in startup_notices or []:      # e.g. "a tool changed its instructions" (rug pull)
+        send_notice(notice)
 
     async def on_list_tools(ctx: Any, params: types.PaginatedRequestParams | None) -> types.ListToolsResult:
         return types.ListToolsResult(tools=exposed)
@@ -638,11 +695,13 @@ async def main() -> None:
         language = "en"
 
     async with AsyncExitStack() as stack:
-        exposed, routes = await connect_servers(config, stack, scanner, action_log, language)
+        notices: list[dict[str, Any]] = []
+        exposed, routes = await connect_servers(config, stack, scanner, action_log, language, notices)
         if not routes:
             log.error("No tool servers could be started - check warden_config.json")
         server = build_server(exposed, routes, action_log, policy, scanner, checker, language=language,
-                              approvals=config.get("approvals"), secrets=secret_values(config["servers"]))
+                              approvals=config.get("approvals"), secrets=secret_values(config["servers"]),
+                              startup_notices=notices)
         if checker.enabled:
             # Load the AI model in the background, so the first real check is fast.
             warm_up = asyncio.create_task(checker.warm_up())  # noqa: F841 (keep a reference)

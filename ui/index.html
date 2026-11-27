@@ -31,7 +31,7 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6M10 3v6L4.5 19A1.5 1.5 0 0 0 5.8 21h12.4a1.5 1.5 0 0 0 1.3-2L14 9V3"/><path d="M7 15h10"/></svg>
       Attack Lab
     </button>
-    <div class="sidebar-foot">Keep this window open:<br>it shows the Allow / Deny popups.</div>
+    <div class="sidebar-foot">This window shows the Allow / Deny popups.<br>Warden opens it by itself when it needs you.</div>
   </aside>
 
   <main>
@@ -54,6 +54,14 @@
         <div class="card stat"><div class="stat-value" id="stat-attacks">–</div><div class="stat-label">attacks found</div></div>
         <div class="card stat"><div class="stat-value" id="stat-blocked">–</div><div class="stat-label">actions stopped</div></div>
         <div class="card stat"><div class="stat-value" id="stat-allowed">–</div><div class="stat-label">allowed by you</div></div>
+      </div>
+
+      <!-- Rug pull: tools whose description changed. Hidden from the AI until the user trusts them. -->
+      <div class="card" id="changed-card" hidden>
+        <h2>Tools that changed their instructions</h2>
+        <p class="muted small flush">Warden hid these tools from your AI. Only trust a change you expected, for example
+          right after you updated that tool. Then restart your AI app.</p>
+        <div class="rows" id="changed"></div>
       </div>
 
       <div class="card">

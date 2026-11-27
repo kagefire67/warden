@@ -46,6 +46,7 @@ from warden_intent import DEFAULTS as INTENT_DEFAULTS
 from warden_intent import start_ollama
 from warden_policy import Policy
 from warden_protect import ProtectError, Target
+from warden_toolmemory import ToolMemoryError, accept_change, pending_changes
 
 WARDEN_DIR = Path(__file__).resolve().parent
 UI_DIR = WARDEN_DIR / "ui"
@@ -239,7 +240,19 @@ class Api:
         overall, headline, subline = status_summary(checks)
         return {"overall": overall, "headline": headline, "subline": subline,
                 "checks": [{"ok": ok, "text": text} for ok, text in checks],
-                "apps": apps, "today": today_summary(read_events())}
+                "apps": apps, "today": today_summary(read_events()),
+                "changed_tools": [{k: str(v)[:4000] for k, v in c.items()} for c in pending_changes()]}
+
+    def trust_tool(self, tool_key: str) -> dict[str, Any]:
+        """The user trusts a tool's new description (rug-pull review). Takes effect after the AI app restarts."""
+        try:
+            ok = accept_change(str(tool_key))
+        except (ToolMemoryError, OSError) as exc:
+            return {"ok": False, "lines": [f"Warden's tool memory could not be changed: {exc}"]}
+        if not ok:
+            return {"ok": False, "lines": ["That change is not waiting for review any more."]}
+        return {"ok": True, "lines": [f"{tool_key} is trusted again.",
+                                      "Fully restart your AI app (also from the system tray) so it can use the tool."]}
 
     def get_history(self, show_all: bool = False) -> list[dict[str, str]]:
         events = read_events()
@@ -338,7 +351,7 @@ class NoticeApi:
     """The bridge for ONE notice window ("attack found" / "action stopped"). It only shows
     text and can close itself: there is nothing to approve here."""
 
-    KINDS = ("attack", "blocked")
+    KINDS = ("attack", "blocked", "changed")
 
     def __init__(self, notice: dict[str, Any], close: Callable[[], None]) -> None:
         self._notice, self._close = notice, close
