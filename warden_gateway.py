@@ -61,10 +61,13 @@ from warden_toolmemory import check_tools, default_memory_file
 import warden_story
 from warden_story import Story
 
-WARDEN_DIR = Path(__file__).resolve().parent
-DEFAULT_CONFIG = WARDEN_DIR / "warden_config.json"
-DEFAULT_LOG = WARDEN_DIR / "logs" / "actions.jsonl"
-DEFAULT_RULES = WARDEN_DIR / "rules.json"
+import warden_paths
+
+# From source these are in the project folder; when installed, settings and log are in
+# %LOCALAPPDATA%\Warden and rules.json comes with the program (see warden_paths.py).
+DEFAULT_CONFIG = warden_paths.CONFIG
+DEFAULT_LOG = warden_paths.LOG
+DEFAULT_RULES = warden_paths.RULES
 
 # Tool names shown to the AI look like "filesystem__read_file".
 NAME_SEPARATOR = "__"
@@ -289,7 +292,8 @@ def load_config(path: Path) -> dict[str, Any]:
     config["servers"] = dict(config.get("servers") or {})
     add_private_servers(config)
     if not config["servers"]:
-        raise SystemExit(f"No servers listed in {path}")
+        # Not an error: e.g. a fresh install before any tool was moved behind Warden.
+        log.warning("No tool servers set up yet (%s and the private servers file are empty)", path)
     return config
 
 
@@ -664,7 +668,7 @@ def build_server(
 
     return Server(
         "warden",
-        version="0.7.0",
+        version="0.8.0",
         instructions="Warden checks and logs every tool call before it reaches the real tool.",
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,
@@ -675,11 +679,13 @@ def build_server(
 # 6. Start-up
 # ---------------------------------------------------------------------------
 
-async def main() -> None:
+async def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Warden AI agent security gateway")
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="path to warden_config.json")
+    parser.add_argument("--config", type=Path, default=None, help="path to warden_config.json")
     parser.add_argument("--log", type=Path, default=DEFAULT_LOG, help="path to the action log")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.config is None:
+        args.config = warden_paths.ensure_config()      # installed: first run creates the default settings
 
     config = load_config(args.config)
     action_log = ActionLog(args.log)

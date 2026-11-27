@@ -86,9 +86,10 @@ async function refreshStatus() {
     main.append(el("div", "row-title", a.name));
     main.append(el("div", "row-sub", a.note || a.path));
     const pill = { protected: ["ok", "PROTECTED"], not_protected: a.has_tools ? ["bad", "NOT PROTECTED"] : ["none", "NO AI TOOLS"],
+                   update_needed: ["warn", "OTHER WARDEN COPY"],
                    unreadable: ["warn", "CAN'T READ CONFIG"] }[a.state] || ["none", a.state];
     const button = el("button", "btn" + (a.state === "protected" ? "" : " primary"),
-                      a.state === "protected" ? "Unprotect" : "Protect");
+                      a.state === "protected" ? "Unprotect" : a.state === "update_needed" ? "Update" : "Protect");
     button.disabled = a.state === "unreadable";
     button.addEventListener("click", () => confirmProtection(a));
     row.append(main, el("span", "pill " + pill[0], pill[1]), button);
@@ -98,10 +99,15 @@ async function refreshStatus() {
 
 function confirmProtection(app) {
   const protecting = app.state !== "protected";
-  $("modal-title").textContent = (protecting ? "Protect " : "Unprotect ") + app.name + "?";
+  $("modal-title").textContent = (app.state === "update_needed" ? "Update " : protecting ? "Protect " : "Unprotect ")
+                                 + app.name + "?";
   const body = $("modal-body");
   body.replaceChildren();
-  if (protecting) {
+  if (app.state === "update_needed") {
+    body.append(el("p", "flush", app.name + " is protected by another copy of Warden (for example the project " +
+                                 "folder from before Warden was installed). Warden will point it at this copy."));
+    body.append(el("p", "muted", "A backup of its config is made first."));
+  } else if (protecting) {
     body.append(el("p", "flush", "Warden will:"));
     const list = el("ol");
     list.append(el("li", null, "back up " + app.name + "'s config file,"));
@@ -112,7 +118,7 @@ function confirmProtection(app) {
     body.append(el("p", "flush", app.name + " will talk to its tools directly again, without Warden checking them."));
     body.append(el("p", "muted", "A backup of its config is made first."));
   }
-  $("modal-ok").textContent = protecting ? "Protect" : "Unprotect";
+  $("modal-ok").textContent = app.state === "update_needed" ? "Update" : protecting ? "Protect" : "Unprotect";
   $("modal-ok").className = "btn " + (protecting ? "primary" : "danger");
   pendingConfirm = async () => {
     const result = await api.toggle_protection(app.id);

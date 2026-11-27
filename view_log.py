@@ -12,7 +12,7 @@ import sys
 import time
 from pathlib import Path
 
-LOG = Path(__file__).resolve().parent / "logs" / "actions.jsonl"
+from warden_paths import LOG  # noqa: E402  (project folder from source, %LOCALAPPDATA%\Warden when installed)
 LABELS = {"ok": "[ALLOW]", "blocked": "[BLOCK]", "error": "[ERROR]"}
 
 

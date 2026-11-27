@@ -97,6 +97,19 @@ def test_unprotect_puts_everything_back():
     assert wp.status(target)[0] == "not_protected"
 
 
+def test_uninstall_gives_every_app_its_tools_back():
+    a, home, servers = sandbox(CLAUDE_CONFIG)
+    b, _, _ = sandbox({"mcpServers": {"files": {"command": "npx", "args": ["two"]}}}, app="Cursor", key="cursor")
+    c, _, _ = sandbox({"mcpServers": {"warden": {"command": "C:/other/copy/warden-gateway.exe"}}}, app="VS Code", key="vs")
+    wp.protect(a, home, servers)
+    wp.protect(b, home, servers)
+    lines = wp.unprotect_all([a, b, c], home, servers)
+    assert lines == ["Claude Desktop: unprotected", "Cursor: unprotected"], lines
+    assert load(a.config) == CLAUDE_CONFIG and load(b.config)["mcpServers"]["files"]["args"] == ["two"]
+    assert wp.status(c)[0] == "update_needed", "another Warden copy's apps are left alone"
+    assert wp.unprotect_all([a, b], home, servers) == [], "nothing left to do the second time"
+
+
 def test_protect_twice_is_harmless():
     target, home, servers = sandbox(CLAUDE_CONFIG)
     wp.protect(target, home, servers)

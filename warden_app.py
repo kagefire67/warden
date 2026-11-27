@@ -48,10 +48,12 @@ from warden_policy import Policy
 from warden_protect import ProtectError, Target
 from warden_toolmemory import ToolMemoryError, accept_change, pending_changes
 
-WARDEN_DIR = Path(__file__).resolve().parent
-UI_DIR = WARDEN_DIR / "ui"
-CONFIG = WARDEN_DIR / "warden_config.json"
-LOG = WARDEN_DIR / "logs" / "actions.jsonl"
+import warden_paths
+
+# From source: the project folder. Installed: program files + %LOCALAPPDATA%\Warden (warden_paths.py).
+UI_DIR = warden_paths.UI_DIR
+CONFIG = warden_paths.CONFIG
+LOG = warden_paths.LOG
 NOTICE_SECONDS = 25        # a notice window closes by itself after this long
 
 
@@ -87,6 +89,8 @@ def app_check(target: Target) -> tuple[bool | None, str]:
         return False, f"{target.name} goes through Warden, but these tools skip it: {', '.join(bypass)}"
     if state == "protected":
         return True, f"{target.name} goes through Warden"
+    if state == "update_needed":
+        return False, f"{target.name} uses another copy of Warden - click Update to use this one"
     if bypass:
         return False, f"{target.name} is NOT protected ({len(bypass)} tools skip Warden)"
     return None, f"{target.name}: no AI tools set up yet"
@@ -100,8 +104,9 @@ def load_config() -> dict[str, Any]:
 
 
 def check_rules(config: dict[str, Any]) -> tuple[bool, str]:
-    rules = Path(config.get("rules_file", "rules.json"))
-    rules = rules if rules.is_absolute() else WARDEN_DIR / rules
+    # Same rule as the gateway: a relative rules_file is next to the settings file; none = the built-in one.
+    rules = Path(config["rules_file"]) if config.get("rules_file") else warden_paths.RULES
+    rules = rules if rules.is_absolute() else CONFIG.parent / rules
     try:
         return True, f"{len(Policy.load(rules).rules)} rules loaded"
     except Exception as exc:
@@ -233,8 +238,8 @@ class Api:
             state, bypass = warden_protect.status(t)
             checks.append(check)
             apps.append({"id": str(t.config), "name": t.name, "path": str(t.config), "state": state,
-                         "has_tools": bool(bypass) or state == "protected",
-                         "note": check[1] if bypass else ""})
+                         "has_tools": bool(bypass) or state in ("protected", "update_needed"),
+                         "note": check[1] if bypass or state == "update_needed" else ""})
         checks.append(check_rules(config))
         checks.append(check_ai(config))
         overall, headline, subline = status_summary(checks)
@@ -294,13 +299,11 @@ class Api:
         return {"running": running, "lines": new, "score": score}
 
     def _run_lab(self, use_ai: bool) -> None:
-        args = [sys.executable.replace("pythonw.exe", "python.exe"), str(WARDEN_DIR / "attack_lab" / "run_lab.py")]
-        if use_ai:
-            args.append("--ai")
+        args = warden_paths.lab_command(use_ai)
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         try:
             proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                                    encoding="utf-8", cwd=WARDEN_DIR, creationflags=flags)
+                                    encoding="utf-8", cwd=warden_paths.PROGRAM_DIR, creationflags=flags)
             for line in proc.stdout:
                 with self._lab_lock:
                     self._lab_lines.append(line)
@@ -446,6 +449,12 @@ def main() -> None:
 
     server = ApprovalServer(decide, notify=notify)
     server.start()
+
+    # Installed Warden: create the default settings on first start, so the checks below see them.
+    try:
+        warden_paths.ensure_config()
+    except OSError:
+        pass
 
     # Files from an older Warden may still hold readable keys: lock them now.
     try:

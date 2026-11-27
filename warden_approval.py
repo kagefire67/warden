@@ -186,7 +186,6 @@ async def app_is_running(app_file: Path | None = None) -> bool:
 # gateway opens it MINIMIZED. This is not a Windows Startup entry: nothing runs
 # until Warden actually needs the user. The app itself makes sure only one copy runs.
 
-APP_SCRIPT = Path(__file__).resolve().parent / "warden_app.py"
 RELAUNCH_PAUSE = 60          # seconds: never try to open the app more than once a minute
 _last_launch = 0.0
 
@@ -194,20 +193,22 @@ _last_launch = 0.0
 def launch_app() -> bool:
     """Start the Warden App in the background. Never shares the gateway's stdout (the MCP channel)."""
     import subprocess
-    import sys
-    pythonw = Path(sys.executable).with_name("pythonw.exe")
-    python = pythonw if pythonw.exists() else Path(sys.executable)
+    import warden_paths
     flags = 0
     if os.name == "nt":
         flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-    try:
-        subprocess.Popen([str(python), str(APP_SCRIPT), "--background"], cwd=str(APP_SCRIPT.parent),
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         creationflags=flags, close_fds=True)
-        return True
-    except OSError as exc:
-        log.info("Could not open the Warden App (%s)", type(exc).__name__)
-        return False
+    # Some AI apps close every program the gateway started when they quit (a Windows "job").
+    # Breaking away keeps the Warden App open; if the AI app does not allow it, start it normally.
+    attempts = [flags | 0x01000000, flags] if os.name == "nt" else [flags]    # 0x01000000 = CREATE_BREAKAWAY_FROM_JOB
+    for creationflags in attempts:
+        try:
+            subprocess.Popen(warden_paths.app_command(background=True), cwd=str(warden_paths.PROGRAM_DIR),
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             creationflags=creationflags, close_fds=True)
+            return True
+        except OSError as exc:
+            log.info("Could not open the Warden App this way (%s)", type(exc).__name__)
+    return False
 
 
 async def reach_app(app_file: Path | None = None, wait_seconds: float = 20,

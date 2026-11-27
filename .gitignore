@@ -3,5 +3,7 @@ __pycache__/
 logs/
 .env
 .claude/
+build/
+packaging/warden-256.png
 CLAUDE.md
 PROJECT_SUMMARY.md

@@ -192,15 +192,25 @@ def write_json(name, data):
 
 
 def test_claude_config_protected():
-    path = write_json("p.json", {"mcpServers": {"warden": {"command": "python", "args": ["C:/w/warden_gateway.py"]}}})
+    from warden_protect import warden_entry
+    path = write_json("p.json", {"mcpServers": {"warden": warden_entry()}})
     assert protection_status(path) == ("protected", [])
 
 
 def test_claude_config_with_tool_that_skips_warden():
+    from warden_protect import warden_entry
     path = write_json("q.json", {"mcpServers": {
-        "warden": {"command": "python", "args": ["C:/w/warden_gateway.py"]},
+        "warden": warden_entry(),
         "github": {"command": "npx", "args": ["github-mcp"]}}})
     assert protection_status(path) == ("protected", ["github"])
+
+
+def test_claude_config_protected_by_another_warden_copy():
+    # e.g. still pointing at the project folder after Warden was installed
+    path = write_json("u.json", {"mcpServers": {"warden": {"command": "python", "args": ["C:/old/warden_gateway.py"]}}})
+    assert protection_status(path) == ("update_needed", [])
+    path = write_json("v.json", {"mcpServers": {"warden": {"command": "C:/Programs/Warden/warden-gateway.exe"}}})
+    assert protection_status(path)[0] == "update_needed", "the installed .exe is recognised as Warden too"
 
 
 def test_claude_config_not_protected_or_broken():

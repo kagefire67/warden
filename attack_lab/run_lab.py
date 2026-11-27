@@ -32,15 +32,17 @@ from mcp import Client, StdioServerParameters
 LAB = Path(__file__).resolve().parent
 ROOT = LAB.parent
 sys.path.insert(0, str(LAB))
+sys.path.insert(0, str(ROOT))
 
+import warden_paths  # noqa: E402
 from scenarios import READ_TOOLS, SCENARIOS  # noqa: E402
 
 PARALLEL = 4   # how many Wardens run at the same time (2 with --ai: one GPU)
 
 
 def ai_settings() -> dict:
-    """The AI check settings from the real warden_config.json, switched on."""
-    config = json.loads((ROOT / "warden_config.json").read_text(encoding="utf-8"))
+    """The AI check settings from the user's warden_config.json, switched on."""
+    config = json.loads(warden_paths.ensure_config().read_text(encoding="utf-8"))
     return {**config.get("intent_check", {}), "enabled": True}
 
 
@@ -56,20 +58,23 @@ async def run_scenario(s: dict, intent_check: dict | None = None) -> dict:
         config = tmp_path / "config.json"
         log = tmp_path / "actions.jsonl"
 
+        lab_server, *lab_server_args = warden_paths.lab_server_command()
+        gateway, *gateway_args = warden_paths.gateway_command()
+
         async def run_warden(server_env: dict | None = None) -> set[str]:
             config.write_text(json.dumps({
-                "rules_file": str(ROOT / "rules.json"),
+                "rules_file": str(warden_paths.RULES),
                 "intent_check": intent_check or {"enabled": False},
                 "approvals": {"enabled": False},   # the lab measures Warden alone: no popups
                 "extra_servers_file": None,        # ...and only the lab's fake tools
                 # Tool memory only for the rug-pull scenario, in this scenario's own temp folder.
                 "tool_memory_file": str(tmp_path / "tool_memory.json") if rug_pull else None,
-                "servers": {"lab": {"command": sys.executable, "args": [str(LAB / "lab_server.py")],
+                "servers": {"lab": {"command": lab_server, "args": lab_server_args,
                                     **({"env": server_env} if server_env else {})}},
             }))
             params = StdioServerParameters(
-                command=sys.executable,
-                args=[str(ROOT / "warden_gateway.py"), "--config", str(config), "--log", str(log)],
+                command=gateway,
+                args=[*gateway_args, "--config", str(config), "--log", str(log)],
             )
             async with Client(params) as client:
                 names = {t.name for t in (await client.list_tools()).tools}
@@ -219,7 +224,8 @@ async def main() -> None:
     for line in summary_lines(results):
         print(line)
 
-    out = LAB / ("results_ai.md" if use_ai else "results.md")
+    warden_paths.LAB_REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    out = warden_paths.LAB_REPORT_DIR / ("results_ai.md" if use_ai else "results.md")
     write_markdown(results, out, mode)
     print(f"\nFull report: {out}")
 

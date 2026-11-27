@@ -34,9 +34,8 @@ from glob import glob
 from pathlib import Path
 from typing import Any
 
+import warden_paths
 from warden_secrets import SecretError, has_plain_keys, lock_servers, lock_spec, unlock_spec
-
-WARDEN_DIR = Path(__file__).resolve().parent
 
 
 def warden_home() -> Path:
@@ -98,9 +97,11 @@ def detect_targets() -> list[Target]:
 # ---------------------------------------------------------------------------
 
 def is_warden(spec: Any) -> bool:
+    """Is this app-config entry Warden itself? (from source: warden_gateway.py, installed: warden-gateway.exe)"""
     if not isinstance(spec, dict):
         return False
-    return "warden_gateway" in str(spec.get("command", "")) or any("warden_gateway" in str(a) for a in spec.get("args", []))
+    parts = [str(spec.get("command", ""))] + [str(a) for a in spec.get("args", [])]
+    return any("warden_gateway" in p or "warden-gateway" in p for p in parts)
 
 
 def is_local_server(spec: Any) -> bool:
@@ -109,10 +110,8 @@ def is_local_server(spec: Any) -> bool:
 
 
 def warden_entry(vscode_style: bool = False) -> dict[str, Any]:
-    python = WARDEN_DIR / ".venv" / "Scripts" / "python.exe"
-    if not python.exists():
-        python = Path(sys.executable.replace("pythonw.exe", "python.exe"))
-    entry = {"command": python.as_posix(), "args": [(WARDEN_DIR / "warden_gateway.py").as_posix()]}
+    command, *args = warden_paths.gateway_command()       # the .exe when installed, python + script from source
+    entry = {"command": Path(command).as_posix(), "args": [Path(a).as_posix() for a in args]}
     return {"type": "stdio", **entry} if vscode_style else entry
 
 
@@ -171,15 +170,22 @@ def lock_existing(home: Path | None = None, servers_file: Path | None = None) ->
 # ---------------------------------------------------------------------------
 
 def status(target: Target) -> tuple[str, list[str]]:
-    """("protected" | "not_protected" | "unreadable", [servers that skip Warden])."""
+    """("protected" | "update_needed" | "not_protected" | "unreadable", [servers that skip Warden]).
+
+    "update_needed": protected, but by ANOTHER copy of Warden (e.g. the project folder before
+    Warden was installed). Protecting again points the app at this copy."""
     try:
         data = read_json(target.config, {})
     except ProtectError:
         return "unreadable", []
     servers = data.get(target.servers_key) or {}
-    has_warden = any(is_warden(s) for s in servers.values())
+    wardens = [s for s in servers.values() if is_warden(s)]
     bypass = [n for n, s in servers.items() if not is_warden(s)]
-    return ("protected" if has_warden else "not_protected"), bypass
+    if not wardens:
+        return "not_protected", bypass
+    me = warden_entry(target.vscode_style)
+    same = any(s.get("command") == me["command"] and s.get("args", []) == me["args"] for s in wardens)
+    return ("protected" if same else "update_needed"), bypass
 
 
 def protect(target: Target, home: Path | None = None, servers_file: Path | None = None) -> Result:
@@ -255,6 +261,22 @@ def unprotect(target: Target, home: Path | None = None, servers_file: Path | Non
     write_json(servers_file, private)
     write_json(records_file, records)
     return result
+
+
+def unprotect_all(targets: list[Target] | None = None, home: Path | None = None,
+                  servers_file: Path | None = None) -> list[str]:
+    """Used by the uninstaller: give every protected AI app its tools back, so removing
+    Warden never leaves an app pointing at a program that is gone. Returns one line per app."""
+    lines = []
+    for target in detect_targets() if targets is None else targets:
+        try:
+            if status(target)[0] != "protected":
+                continue
+            unprotect(target, home, servers_file)
+            lines.append(f"{target.name}: unprotected")
+        except (ProtectError, OSError) as exc:
+            lines.append(f"{target.name}: could not unprotect ({exc})")
+    return lines
 
 
 def _same_server(saved: Any, spec: dict[str, Any]) -> bool | None:

@@ -41,7 +41,21 @@ Current score (rules + scanner): **25/25 attacks stopped** (22 blocked outright,
 
 ## Getting started (Windows)
 
-You need **Python 3.11+**. Node.js is needed only for the example filesystem tool.
+### Install (recommended)
+
+1. Download **`WardenSetup-<version>.exe`** from the [Releases](https://github.com/kagefire67/warden/releases) page and run it. It installs for your Windows user only (no admin rights) and needs nothing else: Python is built in.
+   Warden is not code-signed yet, so Windows may show *"Windows protected your PC"*: click **More info → Run anyway**.
+2. Open **Warden** from the Start menu.
+3. On the **Home** tab, click **Protect** next to your AI app. Warden backs up the app's config, moves its local tools behind Warden, and makes the app talk only to Warden. **Unprotect** puts everything back exactly.
+3. Fully quit the AI app (also from the system tray) and reopen it.
+
+That's it: every tool call now goes through Warden. The **History** tab shows what Warden saw and stopped.
+
+To remove Warden, uninstall it from **Windows Settings → Apps**. The uninstaller first gives every AI app its tools back, exactly as before.
+
+### Run from source (developers)
+
+You need **Python 3.11+** (Node.js only for the example filesystem tool).
 
 ```
 py -m venv .venv
@@ -50,11 +64,9 @@ pip install -r requirements.txt
 python tests\run_tests.py
 ```
 
-1. Double-click **`Warden App.cmd`**.
-2. On the **Home** tab, click **Protect** next to your AI app. Warden backs up the app's config, moves its local tools behind Warden, and makes the app talk only to Warden. **Unprotect** puts everything back exactly.
-3. Fully quit the AI app (also from the system tray) and reopen it.
+Then double-click **`Warden App.cmd`** and click **Protect** as above. `python view_log.py --stories --follow` shows Warden's decisions live in a terminal. If an AI app was protected by another copy of Warden (for example before installing), the Home tab shows **Update** to switch it over.
 
-That's it: every tool call now goes through Warden. The **History** tab shows what Warden saw and stopped, and `python view_log.py --stories --follow` shows it live in a terminal.
+To build the installer yourself: `pip install pyinstaller`, install [Inno Setup 6](https://jrsoftware.org/isinfo.php), then run `powershell -ExecutionPolicy Bypass -File packaging\build.ps1`. It runs the tests, bundles Warden with PyInstaller and writes `build\installer\WardenSetup-<version>.exe`.
 
 ### Adding a tool that needs a key
 
@@ -92,6 +104,8 @@ Install Ollama from ollama.com and run `ollama pull qwen3:8b` (about 5 GB). The 
 | `warden_approval.py` | The private channel to the Warden App (approvals and notices) |
 | `warden_app.py`, `ui/` | The Warden App |
 | `add_server.py` | Add a tool server with a locked key |
+| `warden_paths.py`, `warden_main.py` | Where files live (source vs installed) and the entry point of the installed `.exe` files |
+| `packaging/` | Installer recipe (PyInstaller + Inno Setup), icon and build script |
 | `view_log.py` | Read the log in a terminal |
 | `attack_lab/` | Fake attacks and the scoring script |
 | `tests/` | The test suite (`python tests\run_tests.py`) |
