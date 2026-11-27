@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from warden_approval import ApprovalServer, app_is_running, ask_user  # noqa: E402
+from warden_approval import ApprovalServer, app_is_running, ask_user, tell_user  # noqa: E402
 from warden_app import event_icon, protection_status, read_events, today_summary  # noqa: E402
 
 TMP = Path(tempfile.mkdtemp())
@@ -53,6 +53,78 @@ def test_request_details_reach_the_app_but_not_the_token():
     finally:
         s.stop()
     assert seen["title"] == "Send email?" and "token" not in seen
+
+
+def test_notice_reaches_the_app_without_the_token():
+    seen, arrived = [], __import__("threading").Event()
+    s = ApprovalServer(lambda req: "allow", app_file=TMP / "n.json",
+                       notify=lambda n: (seen.append(n), arrived.set()))
+    s.start()
+    try:
+        assert asyncio.run(tell_user({"kind": "attack", "title": "Hidden attack found"}, app_file=s.app_file))
+        assert arrived.wait(5)
+    finally:
+        s.stop()
+    assert seen[0] == {"kind": "attack", "title": "Hidden attack found"}, seen
+
+
+def test_notice_can_never_approve_anything():
+    asked = []
+    s = ApprovalServer(lambda req: asked.append(req) or "allow", app_file=TMP / "n2.json", notify=lambda n: None)
+    s.start()
+    try:
+        assert asyncio.run(tell_user({"kind": "blocked", "decision": "allow"}, app_file=s.app_file))
+    finally:
+        s.stop()
+    assert asked == [], "a notice must never reach the approval code"
+
+
+def test_notice_without_app_is_harmless():
+    assert asyncio.run(tell_user({"kind": "attack"}, app_file=TMP / "missing.json")) is False
+    s = server(lambda req: "allow", "n3.json")      # an app without a notice window
+    try:
+        assert asyncio.run(tell_user({"kind": "attack"}, app_file=s.app_file)) is False
+    finally:
+        s.stop()
+
+
+def test_closed_app_is_opened_once():
+    import warden_approval
+    app_file = TMP / "opened.json"
+    started = []
+
+    def fake_launch():                    # instead of opening the real app: start a test app
+        started.append(1)
+        s = ApprovalServer(lambda req: "deny", app_file=app_file)
+        s.start()
+        started.append(s)
+        return True
+
+    warden_approval._last_launch = 0.0
+    try:
+        assert asyncio.run(warden_approval.reach_app(app_file, wait_seconds=5, launch=fake_launch))
+        assert asyncio.run(warden_approval.reach_app(app_file, wait_seconds=5, launch=fake_launch))
+        assert started.count(1) == 1, "an app that is already running is not opened again"
+    finally:
+        started[1].stop()
+    # It just tried: a closed app is not re-opened again and again (at most once a minute).
+    assert not asyncio.run(warden_approval.reach_app(app_file, wait_seconds=1, launch=fake_launch))
+    assert started.count(1) == 1
+    warden_approval._last_launch = 0.0
+
+
+def test_app_that_cannot_open_means_blocked():
+    import warden_approval
+    warden_approval._last_launch = 0.0
+    assert not asyncio.run(warden_approval.reach_app(TMP / "never.json", wait_seconds=1, launch=lambda: False))
+    warden_approval._last_launch = 0.0
+
+
+def test_only_one_app_copy():
+    from warden_app import first_copy
+    name = f"Local\\WardenTest-{time.time_ns()}"
+    assert first_copy(name), "the first copy may run"
+    assert not first_copy(name), "a second copy must not start"
 
 
 def test_wrong_token_is_refused():

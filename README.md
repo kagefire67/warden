@@ -14,7 +14,7 @@ AI app  --->  WARDEN  --->  real tools (files, email, ...)
 
 **Tool keys stay safe:** keys (tokens, API keys) of protected tools are stored encrypted with Windows' own lock (DPAPI), so a copied file is useless on another PC. The AI never sees them: Warden hides them in tool results and blocks any action that tries to send one.
 
-**Warden App (Stage 8):** double-click `Warden App.cmd` (needs `pip install -r requirements.txt`, which includes pywebview). It shows whether you're protected, the history of what Warden stopped, and an Attack Lab button. While it's open, actions that need approval pop up with **Allow once / Deny**. If it's closed, those actions stay blocked.
+**Warden App (Stage 8):** double-click `Warden App.cmd` (needs `pip install -r requirements.txt`, which includes pywebview). It shows whether you're protected, the history of what Warden stopped, and an Attack Lab button. Actions that need approval pop up with **Allow once / Deny**, and when Warden finds an attack or stops an action, a small notice appears in the bottom-right corner, so you hear about it directly, not only the AI. If the app is closed when Warden needs you, Warden opens it by itself (minimized; only one copy ever runs). If it cannot be opened, actions that need approval stay blocked.
 
 **Stories (Stage 7):** every block comes with a short plain-language explanation. See them with `python view_log.py --stories` (add `--follow` to watch live). Set `"language": "ar"` in `warden_config.json` for Arabic.
 

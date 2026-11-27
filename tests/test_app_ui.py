@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 UI = ROOT / "ui"
 sys.path.insert(0, str(ROOT))
 
-from warden_app import ApprovalApi, event_for_ui, parse_lab_score, status_summary  # noqa: E402
+from warden_app import ApprovalApi, NoticeApi, event_for_ui, parse_lab_score, status_summary  # noqa: E402
 
 JS_FILES = sorted(UI.glob("*.js"))
 HTML_FILES = sorted(UI.glob("*.html"))
@@ -67,6 +67,29 @@ def test_history_items_are_plain_strings():
     assert all(isinstance(v, str) for v in item.values())
     assert item["badge"] == "ATTACK FOUND" and item["when"] == "2026-11-22 10:00"
     assert item["story"] == "<script>alert(1)</script>", "text is passed on unchanged; the UI shows it as text"
+
+
+def test_notice_bridge_only_shows_and_closes():
+    closed = []
+    api = NoticeApi({"kind": "<b>evil</b>", "title": "Hidden attack", "story": "x" * 5000, "server": "github",
+                     "tool": "issue_read", "token": "secret"}, lambda: closed.append(1))
+    shown = api.get_notice()
+    assert shown["kind"] == "blocked", "unknown kinds fall back to a known one"
+    assert set(shown) == {"kind", "title", "story", "server", "tool"} and len(shown["story"]) == 2000
+    assert all(isinstance(v, str) for v in shown.values())
+    public = {n for n in dir(api) if not n.startswith("_")}
+    assert public == {"get_notice", "close", "KINDS"}, f"the page must not be able to do more: {public}"
+    api.close()
+    assert closed == [1]
+
+
+def test_notice_lands_on_screen_with_display_scaling():
+    from warden_app import notice_position
+    # A 2560x1440 screen at 125% scaling is 2048x1152 in window units (the bug seen live).
+    assert notice_position(440, 260, screen=(2560, 1440), scale=1.25) == (1584, 820)
+    assert notice_position(440, 260, screen=(1920, 1080), scale=1.0) == (1456, 748)
+    x, y = notice_position(440, 260)
+    assert x is None or 0 <= x, "the real screen gives a visible spot (or lets Windows choose)"
 
 
 def test_status_summary():

@@ -38,7 +38,7 @@ import urllib.request
 from datetime import datetime, timezone
 from glob import glob
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import warden_protect
 from warden_approval import ApprovalServer, app_is_running
@@ -51,6 +51,7 @@ WARDEN_DIR = Path(__file__).resolve().parent
 UI_DIR = WARDEN_DIR / "ui"
 CONFIG = WARDEN_DIR / "warden_config.json"
 LOG = WARDEN_DIR / "logs" / "actions.jsonl"
+NOTICE_SECONDS = 25        # a notice window closes by itself after this long
 
 
 # ---------------------------------------------------------------------------
@@ -315,14 +316,69 @@ class ApprovalApi:
             self._done.set()
 
 
+def notice_position(width: int, height: int, screen: tuple[int, int] | None = None,
+                    scale: float | None = None) -> tuple[int | None, int | None]:
+    """Bottom-right corner, above the taskbar. Windows display scaling (e.g. 125%) matters:
+    the screen size is in real pixels, but window positions are in scaled units."""
+    try:
+        if screen is None:
+            import ctypes
+            user32 = ctypes.windll.user32
+            # Both numbers come from the same view of the screen, so they always match up.
+            screen = (user32.GetSystemMetrics(0), user32.GetSystemMetrics(1))
+            scale = user32.GetDpiForSystem() / 96
+        scale = scale or 1.0
+        w, h = screen[0] / scale, screen[1] / scale
+        return max(0, int(w - width - 24)), max(0, int(h - height - 72))
+    except Exception:
+        return None, None                                     # let Windows choose the place
+
+
+class NoticeApi:
+    """The bridge for ONE notice window ("attack found" / "action stopped"). It only shows
+    text and can close itself: there is nothing to approve here."""
+
+    KINDS = ("attack", "blocked")
+
+    def __init__(self, notice: dict[str, Any], close: Callable[[], None]) -> None:
+        self._notice, self._close = notice, close
+
+    def get_notice(self) -> dict[str, str]:
+        n = self._notice
+        return {"kind": n.get("kind") if n.get("kind") in self.KINDS else "blocked",
+                **{k: str(n.get(k) or "")[:2000] for k in ("title", "story", "server", "tool")}}
+
+    def close(self) -> None:
+        self._close()
+
+
 # ---------------------------------------------------------------------------
 # Windows
 # ---------------------------------------------------------------------------
 
+def first_copy(name: str = "Local\\WardenApp") -> bool:
+    """True if no other Warden App is running. Uses a Windows 'mutex' (a name only one program
+    can hold), so two gateways opening the app at the same moment still get only one app."""
+    if os.name != "nt":
+        return True
+    import ctypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    handle = kernel32.CreateMutexW(None, False, name)
+    already = ctypes.get_last_error() == 183          # ERROR_ALREADY_EXISTS
+    if handle and not already:
+        first_copy.handle = handle                    # keep it held for as long as the app runs
+        return True
+    return not handle and not already                 # could not check: allow (old behaviour)
+
+
 def main() -> None:
     import webview   # imported here so the checks above can be tested without it
 
-    if asyncio.run(app_is_running()):
+    background = "--background" in sys.argv     # opened by Warden itself: start minimized, no fuss
+    if not first_copy() or asyncio.run(app_is_running()):
+        if background:
+            return                              # one is already running: nothing to do
         webview.create_window("Warden", html="<p style='font-family:Segoe UI;padding:20px'>"
                                               "The Warden App is already running.</p>", width=360, height=140)
         webview.start()
@@ -345,7 +401,37 @@ def main() -> None:
             return "timeout"
         return box.get("decision", "deny")
 
-    server = ApprovalServer(decide)
+    notices: list[Any] = []          # the notice window on screen (at most one)
+    notice_lock = threading.Lock()
+
+    def notify(notice: dict[str, Any]) -> None:
+        """Called by the approval server (in its own thread) when Warden found an attack or stopped
+        an action. Shows a small window in the bottom-right corner that does NOT take the keyboard
+        focus (so it never interrupts typing) and closes by itself after a while."""
+        with notice_lock:
+            for old in notices:                       # a newer notice replaces the older one
+                try:
+                    old.destroy()
+                except Exception:
+                    pass
+            notices.clear()
+            width, height = 440, 260
+            x, y = notice_position(width, height)
+
+            def close() -> None:
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
+
+            win = webview.create_window(
+                "Warden notice", str(UI_DIR / "notice.html"), js_api=NoticeApi(notice, close),
+                width=width, height=height, x=x, y=y, resizable=False, on_top=True, focus=False,
+                frameless=True)
+            notices.append(win)
+        threading.Timer(NOTICE_SECONDS, close).start()
+
+    server = ApprovalServer(decide, notify=notify)
     server.start()
 
     # Files from an older Warden may still hold readable keys: lock them now.
@@ -360,7 +446,7 @@ def main() -> None:
         threading.Thread(target=start_ollama, args=({**INTENT_DEFAULTS, **ai_settings},), daemon=True).start()
     window = webview.create_window(
         "Warden", str(UI_DIR / "index.html"), js_api=Api(),
-        width=1060, height=760, min_size=(820, 560), confirm_close=True)
+        width=1060, height=760, min_size=(820, 560), confirm_close=True, minimized=background)
 
     def shutdown() -> None:
         server.stop()

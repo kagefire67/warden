@@ -193,6 +193,25 @@ def test_moved_tool_really_runs_behind_warden():
     asyncio.run(run())
 
 
+def test_add_server_saves_the_key_locked():
+    from add_server import add_server, remove_server
+    _, _, servers = sandbox(None)
+    add_server("github", "gh-mcp.exe", ["stdio", "--toolsets=issues"], {"GITHUB_PERSONAL_ACCESS_TOKEN": "fake-pat-123456"},
+               servers_file=servers)
+    text = servers.read_text(encoding="utf-8")
+    assert "fake-pat-123456" not in text and "warden-dpapi:" in text
+    saved = unlock_spec(load(servers)["servers"]["github"])
+    assert saved == {"command": "gh-mcp.exe", "args": ["stdio", "--toolsets=issues"],
+                     "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "fake-pat-123456"}}
+    for bad in ("", "a__b", "bad name"):
+        try:
+            add_server(bad, "x", [], {}, servers_file=servers)
+        except ValueError:
+            continue
+        raise AssertionError(f"name {bad!r} should be refused")
+    assert remove_server("github", servers_file=servers) and "github" not in load(servers)["servers"]
+
+
 def test_saved_keys_never_reach_the_ai_or_leave():
     """End to end: a moved tool with a LOCKED key. Warden unlocks it only for the tool,
     hides it from the AI, blocks any action that carries it, and never logs it."""

@@ -51,7 +51,7 @@ from mcp import Client, StdioServerParameters
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 
-from warden_approval import ask_user
+from warden_approval import ask_user, reach_app, tell_user
 from warden_protect import default_servers_file
 from warden_intent import Activity, IntentChecker, IntentResult
 from warden_policy import STRICTNESS, Decision, Policy
@@ -438,6 +438,34 @@ def build_server(
     secrets = secrets or []          # the user's tool keys: never let them leave, never log them
     approvals = {"enabled": True, "timeout_seconds": 60, **(approvals or {})}
     app_file = Path(approvals["app_file"]) if approvals.get("app_file") else None
+    # Notices: tell the USER (not only the AI) when Warden finds an attack or stops an action.
+    notices_on = approvals["enabled"] and approvals.get("notify", True)
+    sending: set[asyncio.Task] = set()     # keep a reference so running notices are not lost
+    # If the Warden App is closed when Warden needs the user, open it (minimized).
+    # Only for the REAL app: tests and the lab use their own app_file and never open anything.
+    open_app = approvals["enabled"] and approvals.get("open_app", True) and app_file is None
+
+    async def app_ready() -> None:
+        if open_app:
+            await reach_app(app_file)
+
+    def notify_user(kind: str, story: Story | None, fallback: str, server: str, tool: str) -> None:
+        """Send a notice to the Warden App in the background. The tool call never waits for it."""
+        if not notices_on:
+            return
+        notice = {"kind": kind, "title": story.title if story else fallback,
+                  "story": story.text if story else fallback, "server": server, "tool": tool}
+
+        async def send() -> None:
+            try:
+                await app_ready()
+                await tell_user(notice, app_file=app_file)
+            except Exception as exc:          # a notice must never break a tool call
+                log.info("Could not send a notice (%s)", type(exc).__name__)
+
+        task = asyncio.create_task(send())
+        sending.add(task)
+        task.add_done_callback(sending.discard)
 
     async def on_list_tools(ctx: Any, params: types.PaginatedRequestParams | None) -> types.ListToolsResult:
         return types.ListToolsResult(tools=exposed)
@@ -478,6 +506,7 @@ def build_server(
             pending = make_story(warden_story.action_stopped, params.name, arguments, "ask", decision.reason,
                                  decision.rule_ids, session.taint_source, entry.get("ai_check"), language,
                                  approval="pending")
+            await app_ready()           # app closed? open it, so the user can really be asked
             approval = await ask_user({
                 "id": entry["id"],
                 "title": pending.title if pending else f"Needs your approval: {params.name}",
@@ -507,6 +536,9 @@ def build_server(
                 entry.update(story=story.text, story_title=story.title)
             action_log.write(entry)
             log.warning("%s %s: %s", decision.action.upper(), params.name, decision.reason)
+            if approval not in ("deny", "timeout"):    # the user just saw the popup; no second message
+                notify_user("blocked", story, f"Warden stopped {params.name}: {decision.reason}",
+                            route.server, route.tool)
             return text_result(blocked_message(decision, story), is_error=True)
 
         # --- Step 2: forward to the real tool ----------------------------
@@ -550,6 +582,8 @@ def build_server(
                                [f.as_dict() for f in attack], language)
             if story:
                 entry.update(story=story.text, story_title=story.title)
+            notify_user("attack", story, f"Hidden attack found in the result of {params.name}",
+                        route.server, route.tool)
             # Some AI apps (Claude Desktop included) show the AI the structured copy of a
             # result instead of the text blocks. Drop it, so the AI is forced to read the
             # text version - which starts with our warning.

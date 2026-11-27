@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Warden notice</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<!-- A small "Warden noticed something" window. It only shows text: nothing can be approved here. -->
+<div class="notice" id="notice">
+  <div class="approval-bar">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v5M12 16.5v.5"/></svg>
+    <b>WARDEN</b>
+    <span id="kind">Action stopped</span>
+    <button class="notice-x" id="close" title="Close" aria-label="Close">&times;</button>
+  </div>
+  <div class="notice-body">
+    <h1 id="title" dir="auto">Warden stopped an action</h1>
+    <p class="story flush" id="story" dir="auto"></p>
+  </div>
+  <div class="notice-foot muted small" id="source"></div>
+</div>
+<script src="notice.js"></script>
+</body>
+</html>

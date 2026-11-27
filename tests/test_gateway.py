@@ -222,7 +222,8 @@ async def approval_session(tmp_path: Path) -> None:
         asked.append(request)
         return "allow" if "recruiter" in request.get("arguments", "") else "deny"
 
-    app = ApprovalServer(decide, app_file=tmp_path / "app.json")
+    notices = []
+    app = ApprovalServer(decide, app_file=tmp_path / "app.json", notify=notices.append)
     app.start()
     params, log_path = warden_params(tmp_path, {"approvals": {"enabled": True, "timeout_seconds": 5,
                                                               "app_file": str(tmp_path / "app.json")}})
@@ -243,8 +244,17 @@ async def approval_session(tmp_path: Path) -> None:
             result = await client.call_tool("fake__send_email", {"to": "recruiter@talent.example", "subject": "x", "body": "x"})
             assert result.is_error and len(asked) == 2, "after an attack, the lockdown is never offered for approval"
             print("PASS  approvals: the lockdown after an attack cannot be approved")
+
+            for _ in range(50):                 # notices are sent in the background
+                if len(notices) >= 2:
+                    break
+                await asyncio.sleep(0.1)
     finally:
         app.stop()
+    kinds = [(n["kind"], n["tool"]) for n in notices]
+    assert kinds == [("attack", "read_file"), ("blocked", "send_email")], kinds
+    assert notices[0]["title"] and notices[0]["story"] and notices[1]["story"], notices
+    print("PASS  notices: the USER is told about the attack and the stopped action (not after their own Deny)")
 
     entries = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
     approved = next(e for e in entries if e.get("approval") == "allow")
